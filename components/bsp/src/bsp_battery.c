@@ -18,8 +18,9 @@ static const char *const tag = "bsp_battery";
 #define BAT_ADC_UNIT    ADC_UNIT_1
 #define BAT_ADC_CHANNEL ADC_CHANNEL_3
 
-// USB detection: voltage >= 4500mV (after ×2 correction) indicates USB power
-#define USB_THRESHOLD_MV 4500
+// USB detection: voltage >= 4600mV (after ×2 correction) indicates USB power.
+// Battery max = 4200mV (4.2V full charge × 2), USB ~4900–5000mV — threshold sits 400mV below USB min.
+#define USB_THRESHOLD_MV 4600
 
 // ============================================================
 // Static handles
