@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/fugo101/zen-clock/compare/v0.2.2...v0.2.3) (2026-05-21)
+
+
+### Bug Fixes
+
+* **release:** revert skip-github-release now that immutable releases are disabled ([#8](https://github.com/fugo101/zen-clock/issues/8)) ([6c83c70](https://github.com/fugo101/zen-clock/commit/6c83c7030f0785b7e156e2855e7b053ba116fe4e))
+
 ## [0.2.2](https://github.com/fugo101/zen-clock/compare/v0.2.1...v0.2.2) (2026-05-21)
 
 
