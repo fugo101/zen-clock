@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/fugo101/zen-clock/compare/v0.2.1...v0.2.2) (2026-05-21)
+
+
+### Bug Fixes
+
+* **release:** skip release-please's GitHub Release; let build-release… ([#6](https://github.com/fugo101/zen-clock/issues/6)) ([583249a](https://github.com/fugo101/zen-clock/commit/583249ac8c6b816c39ea67bd29cd2655ffcb92c7))
+
 ## [0.2.1](https://github.com/fugo101/zen-clock/compare/v0.2.0...v0.2.1) (2026-05-21)
 
 
