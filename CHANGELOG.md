@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/fugo101/zen-clock/compare/v0.2.0...v0.2.1) (2026-05-21)
+
+
+### Bug Fixes
+
+* **release:** create release as draft so firmware assets can be attached ([#3](https://github.com/fugo101/zen-clock/issues/3)) ([312bc2e](https://github.com/fugo101/zen-clock/commit/312bc2ea5727bf6a0e6611b5fd86f1f5ccd404ed))
+
 ## [0.2.0](https://github.com/fugo101/zen-clock/compare/v0.1.0...v0.2.0) (2026-05-21)
 
 
