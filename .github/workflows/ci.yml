@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: [ self-hosted, Linux, X64 ]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/packages
+            ~/.platformio/platforms
+            ~/.cache/pip
+          key: pio-${{ hashFiles('platformio.ini') }}-${{ hashFiles('src/idf_component.yml') }}
+          restore-keys: pio-
+
+      - name: Check Python
+        run: |
+          if ! python3 --version 2>/dev/null; then
+            echo "ERROR: python3 not found. Install it on the runner first."
+            exit 1
+          fi
+
+      - name: Check PlatformIO
+        run: |
+          if ! pio --version 2>/dev/null; then
+            echo "ERROR: pio not found. Run 'pip3 install platformio' on the runner first."
+            exit 1
+          fi
+
+      - name: Build firmware
+        run: pio run -e lilygo-t-display-s3
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ github.sha }}
+          path: |
+            .pio/build/lilygo-t-display-s3/firmware.bin
+            .pio/build/lilygo-t-display-s3/partitions.bin
+          retention-days: 7

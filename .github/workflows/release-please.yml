@@ -1,0 +1,74 @@
+name: Release Please
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  release-please:
+    runs-on: [ self-hosted, Linux, X64 ]
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: googleapis/release-please-action@v5
+        id: release
+        with:
+          token: ${{ secrets.PAT_TOKEN }}
+
+  build-release:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: [ self-hosted, Linux, X64 ]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/packages
+            ~/.platformio/platforms
+            ~/.cache/pip
+          key: pio-${{ hashFiles('platformio.ini') }}-${{ hashFiles('src/idf_component.yml') }}
+          restore-keys: pio-
+
+      - name: Check Python
+        run: |
+          if ! python3 --version 2>/dev/null; then
+            echo "ERROR: python3 not found. Install it on the runner first."
+            exit 1
+          fi
+
+      - name: Check PlatformIO
+        run: |
+          if ! pio --version 2>/dev/null; then
+            echo "ERROR: pio not found. Run 'pip3 install platformio' on the runner first."
+            exit 1
+          fi
+
+      - name: Build firmware
+        run: pio run -e lilygo-t-display-s3
+
+      - name: Rename artifacts with version
+        run: |
+          VERSION="${{ needs.release-please.outputs.version }}"
+          cp .pio/build/lilygo-t-display-s3/firmware.bin "firmware-${VERSION}.bin"
+          cp .pio/build/lilygo-t-display-s3/partitions.bin "partitions-${VERSION}.bin"
+
+      - name: Upload firmware to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          token: ${{ secrets.PAT_TOKEN }}
+          files: |
+            firmware-*.bin
+            partitions-*.bin
