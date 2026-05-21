@@ -32,20 +32,6 @@ jobs:
           submodules: recursive
           token: ${{ secrets.PAT_TOKEN }}
 
-      - uses: actions/cache@v5
-        name: Cache PlatformIO toolchain
-        with:
-          path: ~/.platformio
-          key: pio-tools-${{ runner.os }}-${{ hashFiles('platformio.ini', 'src/idf_component.yml') }}
-          restore-keys: pio-tools-${{ runner.os }}-
-
-      - uses: actions/cache@v5
-        name: Cache SCons build cache
-        with:
-          path: .cache
-          key: pio-build-${{ runner.os }}-${{ hashFiles('platformio.ini', 'sdkconfig.lilygo-t-display-s3') }}
-          restore-keys: pio-build-${{ runner.os }}-
-
       - name: Setup PlatformIO PATH
         run: echo "$HOME/.platformio/penv/bin" >> $GITHUB_PATH
 
