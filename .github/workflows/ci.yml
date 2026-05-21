@@ -11,18 +11,18 @@ jobs:
     runs-on: [ self-hosted, Linux, X64 ]
     if: github.event_name == 'push' || github.event.pull_request.head.repo.fork == false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         name: Cache PlatformIO toolchain
         with:
           path: ~/.platformio
           key: pio-tools-${{ runner.os }}-${{ hashFiles('platformio.ini', 'src/idf_component.yml') }}
           restore-keys: pio-tools-${{ runner.os }}-
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         name: Cache SCons build cache
         with:
           path: .cache
