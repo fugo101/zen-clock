@@ -25,6 +25,11 @@ jobs:
           # PAT required: GITHUB_TOKEN-created PRs do not trigger downstream
           # workflows, so CI would not run on Release PRs without a PAT.
           token: ${{ secrets.PAT_TOKEN }}
+          # Only create the git tag; build-release creates the GitHub Release
+          # with firmware assets. This avoids GitHub's immutable-release
+          # restriction and prevents release-please from creating duplicate
+          # Release PRs when its draft state desyncs from the tag list.
+          skip-github-release: true
 
   build-release:
     needs: release-please
@@ -63,11 +68,10 @@ jobs:
           cp .pio/build/lilygo-t-display-s3/firmware.bin "firmware-${VERSION}.bin"
           cp .pio/build/lilygo-t-display-s3/partitions.bin "partitions-${VERSION}.bin"
 
-      - name: Upload firmware to GitHub Release
+      - name: Create GitHub Release with firmware
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
-          draft: false
           files: |
             firmware-*.bin
             partitions-*.bin
