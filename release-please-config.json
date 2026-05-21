@@ -3,6 +3,7 @@
   "bootstrap-sha": "f3aac5fe49492b1916e1d79a3d4df2bbf031ff52",
   "bump-minor-pre-major": true,
   "bump-patch-for-minor-pre-major": false,
+  "draft": true,
   "changelog-sections": [
     { "type": "feat",     "section": "Features" },
     { "type": "fix",      "section": "Bug Fixes" },

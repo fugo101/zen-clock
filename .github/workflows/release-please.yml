@@ -67,6 +67,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
+          draft: false
           files: |
             firmware-*.bin
             partitions-*.bin
