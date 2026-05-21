@@ -32,6 +32,9 @@ jobs:
             exit 1
           fi
 
+      - name: Clean build artifacts
+        run: pio run -t clean -e lilygo-t-display-s3
+
       - name: Build firmware
         run: pio run -e lilygo-t-display-s3
 
