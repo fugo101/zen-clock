@@ -186,6 +186,47 @@ int myVar; // NOLINT(readability-identifier-naming)
 
 ---
 
+### Signed bitwise on `ESP_LOGx` — `bugprone-signed-bitwise`
+
+```
+Clang-Tidy: Use of a signed integer operand with a binary bitwise operator
+```
+reported on every `ESP_LOGI(...)` / `ESP_LOGW(...)` line.
+
+**Disabled globally in `.clang-tidy`** (`-bugprone-signed-bitwise`).
+
+Watch the check name here. The rule is historically known as `hicpp-signed-bitwise`, and this
+project enables no `hicpp-*` checks — but current LLVM ships it under **both** names as aliases,
+and `.clang-tidy` enables `bugprone-*`, so it was *our own* config turning it on. Toggling CLion's
+"Prefer .clang-tidy files over IDE settings" therefore made no difference in either position.
+Verified with the clang-tidy that CLion bundles
+(`CLion.app/Contents/bin/clang/mac/aarch64/bin/clang-tidy --list-checks` lists both names).
+
+Do *not* add `NOLINT` comments for this. The finding is not in our code at all — the signed
+operands are inside the IDF header, and the diagnostic only points at our line because that is
+where the macro expands. In `esp_log.h:253`:
+
+```c
+esp_log(ESP_LOG_CONFIG_INIT((configs) | ESP_LOG_CONFIGS_DEFAULT | ESP_LOG_CONFIG_CONSTRAINED_ENV), ...)
+```
+
+- `configs` is `ESP_LOG_INFO`, an `esp_log_level_t` enum constant — in C an enum constant has
+  type `int`, i.e. **signed**
+- `ESP_LOG_CONFIG_CONSTRAINED_ENV` is `(1 << ESP_LOG_OFFSET_CONSTRAINED_ENV)` — the literal `1`
+  is a signed `int`
+- likewise `ESP_LOG_LEVEL_MASK` is `((1 << ESP_LOG_LEVEL_LEN) - 1)`
+
+So the OR chain is `int | int | int`. Suppressing it at the call site would mean a `NOLINT` on
+essentially every log statement in the codebase.
+
+**The same check also fires on our event-group code** for the same reason — `BIT0`…`BIT4` are
+defined as plain hex literals (`0x00000001`), which are `int`, so `BIT_STOP | BIT_GOT_IP` is
+also "signed bitwise". Harmless: every operand is a small positive constant, nothing shifts into
+the sign bit, and the result is assigned to `EventBits_t` (`uint32_t`). The rule exists to catch
+sign extension of *negative* values, which cannot occur here.
+
+---
+
 ## Do Not Suppress
 
 | Warning | Reason |

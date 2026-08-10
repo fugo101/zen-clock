@@ -18,6 +18,7 @@ Checks: "-*,\
   readability-inconsistent-ptr-usage,\
   -bugprone-easily-swappable-parameters,\
   -bugprone-infinite-loop,\
+  -bugprone-signed-bitwise,\
   -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling"
 
 CheckOptions:

@@ -98,6 +98,14 @@ static void fire_event(wifi_manager_event_t event)
 // ============================================================
 // Check if stop was requested (non-blocking)
 // ============================================================
+// Peek at BIT_STOP without consuming it. Used to suppress failure events on paths that were
+// interrupted by a deliberate stop: firing NO_MATCH / ALL_FAILED there would make the app
+// schedule a reconnect that later fights BLE provisioning for the radio.
+static bool stop_requested(void)
+{
+  return (xEventGroupGetBits(s_event_group) & BIT_STOP) != 0;
+}
+
 static bool check_stop_signal(void)
 {
   const EventBits_t bits = xEventGroupGetBits(s_event_group);
@@ -222,6 +230,15 @@ static int do_aggregated_scan(wifi_ap_record_t *merged, int max_aps) // NOLINT
 
   for (int round = 0; round < SCAN_ROUNDS; round++)
   {
+    // esp_wifi_scan_start() below blocks for up to SCAN_MAX_TIME_MS per channel, so a stop
+    // request issued mid-scan would otherwise not be noticed until all rounds finish (~12s),
+    // and BLE provisioning would start while the radio is still scanning.
+    if (xEventGroupGetBits(s_event_group) & BIT_STOP)
+    {
+      ESP_LOGI(tag, "Stop requested — aborting scan after %d round(s)", round);
+      break;
+    }
+
     ESP_LOGI(tag, "Scan round %d/%d...", round + 1, SCAN_ROUNDS);
 
     wifi_scan_config_t scan_cfg = {
@@ -343,8 +360,18 @@ static bool try_connect_candidate(const wifi_ap_record_t *ap, const char *passwo
   xEventGroupClearBits(s_event_group, BIT_GOT_IP | BIT_FAIL | BIT_DISCONNECTED);
   esp_wifi_connect();
 
-  EventBits_t bits = xEventGroupWaitBits(s_event_group, BIT_GOT_IP | BIT_DISCONNECTED, pdTRUE, pdFALSE,
+  // BIT_STOP is in the wait mask so a stop request cuts the 15s wait short, but clearOnExit
+  // is pdFALSE: consuming BIT_STOP here would hide it from check_stop_signal() at the loop
+  // top and the task would carry on as if no stop had been requested.
+  EventBits_t bits = xEventGroupWaitBits(s_event_group, BIT_GOT_IP | BIT_DISCONNECTED | BIT_STOP, pdFALSE, pdFALSE,
                                          pdMS_TO_TICKS(CONNECT_TIMEOUT_MS));
+  xEventGroupClearBits(s_event_group, BIT_GOT_IP | BIT_DISCONNECTED);
+
+  if (bits & BIT_STOP)
+  {
+    esp_wifi_disconnect();
+    return false;
+  }
 
   if (bits & BIT_GOT_IP)
   {
@@ -505,6 +532,13 @@ static void wifi_task(void *arg) // NOLINT(readability-non-const-parameter)
         ESP_LOGI(tag, "Aggregated scan: %d unique APs after %d rounds", ap_count, SCAN_ROUNDS);
       }
 
+      // Interrupted by wifi_manager_stop(): fall through to the loop top, which consumes
+      // BIT_STOP and parks in IDLE. Firing NO_MATCH here would schedule a reconnect.
+      if (stop_requested())
+      {
+        break;
+      }
+
       fire_event(WIFI_MGR_SCAN_DONE);
 
       if (ap_count == 0)
@@ -553,6 +587,11 @@ static void wifi_task(void *arg) // NOLINT(readability-non-const-parameter)
         wifi_cred_save_ap_hint(s_match_ap.bssid, s_match_ap.primary);
         set_state(WIFI_ST_VERIFYING);
       }
+      else if (stop_requested())
+      {
+        // Stopped mid-attempt, not a genuine failure — stay quiet and let the loop top park us.
+        ESP_LOGI(tag, "Connect aborted by stop request");
+      }
       else
       {
         ESP_LOGW(tag, "Failed to connect to \"%s\"", s_ssid);
@@ -570,16 +609,21 @@ static void wifi_task(void *arg) // NOLINT(readability-non-const-parameter)
       do_dns_probe();
 
       EventBits_t bits = xEventGroupGetBits(s_event_group);
+
+      // BIT_STOP first: wifi_manager_stop() calls esp_wifi_disconnect(), so a deliberate stop
+      // always raises BIT_DISCONNECTED too. Checking DISCONNECTED first reported a spurious
+      // WIFI_MGR_DISCONNECTED and had the app schedule a reconnect against its own stop.
+      // (The CONNECTED state below already gets this order right.)
+      if (bits & BIT_STOP)
+      {
+        break;
+      }
       if (bits & BIT_DISCONNECTED)
       {
         xEventGroupClearBits(s_event_group, BIT_DISCONNECTED);
         ESP_LOGW(tag, "Disconnected during verification");
         fire_event(WIFI_MGR_DISCONNECTED);
         set_state(WIFI_ST_IDLE);
-        break;
-      }
-      if (bits & BIT_STOP)
-      {
         break;
       }
 
@@ -667,6 +711,13 @@ esp_err_t wifi_manager_start(void)
     return ESP_ERR_INVALID_STATE;
   }
 
+  // Clear leftover bits before waking the task. BIT_STOP in particular: while the task sits
+  // in IDLE it is blocked on ulTaskNotifyTake() and never reaches check_stop_signal(), so a
+  // stop requested in IDLE stays latched. Without this, the first loop iteration after the
+  // notification would consume that stale bit, drop straight back to IDLE and fire no event
+  // at all — leaving the device offline until reboot, with no reconnect scheduled.
+  xEventGroupClearBits(s_event_group, BIT_STOP | BIT_GOT_IP | BIT_FAIL | BIT_DISCONNECTED);
+
   xTaskNotifyGive(s_task_handle);
   return ESP_OK;
 }
@@ -679,9 +730,32 @@ bool wifi_manager_is_connected(void)
 esp_err_t wifi_manager_stop(void)
 {
   ESP_LOGI(tag, "Stopping WiFi...");
+
+  if (get_state() == WIFI_ST_IDLE)
+  {
+    // Already idle: the task is parked in ulTaskNotifyTake() and would never consume BIT_STOP.
+    // Setting it here would only leave a stale bit behind, so just make sure the radio is down.
+    esp_wifi_disconnect();
+    return ESP_OK;
+  }
+
   xEventGroupSetBits(s_event_group, BIT_STOP);
   esp_wifi_disconnect();
-  return ESP_OK;
+
+  // Block until the task has actually unwound to IDLE. Callers (do_reset_wifi) start BLE
+  // provisioning immediately afterwards, and network_prov_mgr conflicts with a radio that is
+  // still scanning or associating.
+  for (int waited = 0; waited < STOP_TIMEOUT_MS; waited += STOP_POLL_MS)
+  {
+    if (get_state() == WIFI_ST_IDLE)
+    {
+      return ESP_OK;
+    }
+    vTaskDelay(pdMS_TO_TICKS(STOP_POLL_MS));
+  }
+
+  ESP_LOGW(tag, "Stop timed out after %dms — task still in %s", STOP_TIMEOUT_MS, state_name(get_state()));
+  return ESP_ERR_TIMEOUT;
 }
 
 void wifi_manager_set_callback(wifi_event_cb_t cb)

@@ -21,6 +21,20 @@
 
 static lv_obj_t *s_overlay = NULL;
 
+// The overlay is parented to whatever screen is active when provisioning starts, and nav.c
+// deletes the old screen on every transition — which recursively deletes this overlay. Buttons
+// stay live during provisioning, so a long-press on BOOT while the QR is up used to free the
+// overlay behind our back: s_overlay kept pointing at released memory, prov_screen_hide() then
+// deleted it a second time, and prov_screen_show() early-returned forever. Track the deletion
+// instead of assuming we are the only one who can trigger it.
+static void overlay_deleted_cb(lv_event_t *e)
+{
+  if (lv_event_get_target(e) == s_overlay)
+  {
+    s_overlay = NULL;
+  }
+}
+
 void prov_screen_show(const char *device_name, const char *password)
 {
   if (s_overlay)
@@ -30,6 +44,7 @@ void prov_screen_show(const char *device_name, const char *password)
 
   // Full-screen black overlay on top of the current screen
   s_overlay = lv_obj_create(lv_screen_active());
+  lv_obj_add_event_cb(s_overlay, overlay_deleted_cb, LV_EVENT_DELETE, NULL);
   lv_obj_set_size(s_overlay, LV_HOR_RES, LV_VER_RES);
   lv_obj_set_pos(s_overlay, 0, 0);
   lv_obj_set_style_bg_color(s_overlay, lv_color_black(), 0);

@@ -38,16 +38,29 @@ re-check procedure are in `THIRD_PARTY.md`.
 
 ---
 
-## Phase 1 — Critical: crash & wedge
+## Phase 1 — Critical: crash & wedge  ✅ done
 
 | | Sev | Where | Issue |
 |---|---|---|---|
-| [ ] | 🔴 | `wifi_manager.c:679,447,433,101` | **Stale `BIT_STOP` kills WiFi permanently.** `wifi_manager_stop()` only sets the bit; in `WIFI_ST_IDLE` the task is blocked on `ulTaskNotifyTake` and never consumes it. After re-provisioning, `start()` runs one loop iteration, `check_stop_signal()` eats the stale bit → back to IDLE **firing no event**, so `schedule_reconnect()` never runs. Offline until reboot. |
-| [ ] | 🔴 | `wifi_manager.c:346`, `do_aggregated_scan()` | `wifi_manager_stop()` returns while the task is still inside a blocking `esp_wifi_scan_start` (~12 s) or the 15 s connect wait, so BLE provisioning starts while WiFi is still scanning. Add `BIT_STOP` to the wait mask and check it between scan rounds. |
-| [ ] | 🔴 | `prov_screen.c:32,104` + `nav.c:88` | **Use-after-free.** The QR overlay is a child of the active screen; every `show_*_screen()` does `lv_obj_delete(old)`, which frees the overlay while `s_overlay` stays non-NULL. Long-press BOOT during provisioning → `prov_screen_hide()` deletes freed memory. Fix with an `LV_EVENT_DELETE` callback that nulls the pointer. |
-| [ ] | 🔴 | `ble_provisioning.c:136,226` | `NETWORK_PROV_END` clears `s_active` **before** the callback, so `ble_provisioning_stop()` early-returns and `network_prov_mgr_deinit()` never runs — leaking `prov_ctx`/lock/scheme every provisioning, then tearing down the BT controller underneath a live manager. Split `s_initialized` from `s_active`. |
-| [ ] | 🔴 | `bsp_buttons.c:27` | `BTN_TASK_STACK 2560` — emergency reset runs `esp_srp_gen_salt_verifier()` (mbedtls 3072-bit MPI) on this task. Raise to 6144. |
-| [ ] | 🔴 | `sdkconfig:2665` | `CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=2304` — `BLE_PROV_STARTED` builds the QR + 5 labels on the event-loop task. Raise to 4096. |
+| [x] | 🔴 | `wifi_manager.c:679,447,433,101` | **Stale `BIT_STOP` kills WiFi permanently.** `wifi_manager_stop()` only sets the bit; in `WIFI_ST_IDLE` the task is blocked on `ulTaskNotifyTake` and never consumes it. After re-provisioning, `start()` runs one loop iteration, `check_stop_signal()` eats the stale bit → back to IDLE **firing no event**, so `schedule_reconnect()` never runs. Offline until reboot. |
+| [x] | 🔴 | `wifi_manager.c:346`, `do_aggregated_scan()` | `wifi_manager_stop()` returns while the task is still inside a blocking `esp_wifi_scan_start` (~12 s) or the 15 s connect wait, so BLE provisioning starts while WiFi is still scanning. Add `BIT_STOP` to the wait mask and check it between scan rounds. |
+| [x] | 🔴 | `prov_screen.c:32,104` + `nav.c:88` | **Use-after-free.** The QR overlay is a child of the active screen; every `show_*_screen()` does `lv_obj_delete(old)`, which frees the overlay while `s_overlay` stays non-NULL. Long-press BOOT during provisioning → `prov_screen_hide()` deletes freed memory. Fix with an `LV_EVENT_DELETE` callback that nulls the pointer. |
+| [x] | 🔴 | `ble_provisioning.c:136,226` | `NETWORK_PROV_END` clears `s_active` **before** the callback, so `ble_provisioning_stop()` early-returns and `network_prov_mgr_deinit()` never runs — leaking `prov_ctx`/lock/scheme every provisioning, then tearing down the BT controller underneath a live manager. Split `s_initialized` from `s_active`. |
+| [x] | 🔴 | `bsp_buttons.c:27` | `BTN_TASK_STACK 2560` — emergency reset runs `esp_srp_gen_salt_verifier()` (mbedtls 3072-bit MPI) on this task. Raise to 6144. |
+| [x] | 🔴 | `sdkconfig:2665` | `CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=2304` — `BLE_PROV_STARTED` builds the QR + 5 labels on the event-loop task. Raise to 4096. |
+| [x] | 🟠 | `wifi_manager.c` SCANNING/CONNECTING | **Found while fixing the above.** Once a stop can interrupt scan/connect, those paths fell through to `fire_event(NO_MATCH)` / `fire_event(ALL_FAILED)` — so a deliberate stop made the app schedule a reconnect that would later fire *during* BLE provisioning and grab the radio back. Failure events are now suppressed when `stop_requested()`. |
+| [x] | 🟠 | `wifi_manager.c` VERIFYING | **Found while fixing the above.** `BIT_DISCONNECTED` was tested before `BIT_STOP`, but `wifi_manager_stop()` calls `esp_wifi_disconnect()` and therefore always raises both — so stopping from VERIFYING reported a spurious `WIFI_MGR_DISCONNECTED`. Order swapped to match the CONNECTED state, which already had it right. |
+
+**Hardware verification:** Reset WiFi → re-provision → reconnect confirmed working on-device (the
+symptom that motivated the fix). The BLE teardown fix was *not* verified by heap measurement — it rests
+on code review plus matching the upstream example. If a heap trend across repeated provisioning cycles
+ever becomes measurable, re-check it.
+
+**Known interaction, resolved in Phase 2:** `wifi_manager_stop()` now blocks (up to `STOP_TIMEOUT_MS`,
+typically one scan round) and is still called under the LVGL lock via `on_button_press`, so Reset WiFi
+freezes the display for a few seconds. This is the correct trade — the previous non-blocking stop let
+BLE provisioning start while the radio was still scanning — and Phase 2.3 removes the freeze by moving
+nav action callbacks off the lock.
 
 ---
 

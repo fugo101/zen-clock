@@ -20,11 +20,14 @@ static const char *const tag = "bsp_buttons";
 // ============================================================
 // Timing constants
 // ============================================================
-#define BTN_DEBOUNCE_MS   50
-#define BTN_LONG_MS       800
-#define BTN_EMERGENCY_MS  3000
-#define BTN_POLL_MS       50
-#define BTN_TASK_STACK    2560
+#define BTN_DEBOUNCE_MS  50
+#define BTN_LONG_MS      800
+#define BTN_EMERGENCY_MS 3000
+#define BTN_POLL_MS      50
+// 2560 was not enough: the emergency IO14 hold and the Settings → Reset WiFi item both run
+// their action inline on this task, reaching ble_provisioning_start() → esp_srp_gen_salt_verifier(),
+// which does 3072-bit mbedtls MPI work and overflowed the stack.
+#define BTN_TASK_STACK    6144
 #define BTN_TASK_PRIORITY 3
 
 static constexpr int s_btn_pins[BSP_BTN_COUNT] = {PIN_BTN_BOOT, PIN_BTN_IO14};
