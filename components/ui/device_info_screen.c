@@ -24,10 +24,9 @@
 #include <esp_heap_caps.h>
 #include <esp_timer.h>
 #include <esp_system.h>
+#include <esp_app_desc.h>
 #include <stdio.h>
 #include <time.h>
-
-#define APP_VERSION "1.0.0"
 
 // ============================================================
 // Layout constants (match settings_screen.c)
@@ -337,8 +336,14 @@ void device_info_screen_create(lv_obj_t *parent)
   fmt_bytes(heap_buf, sizeof(heap_buf), heap_caps_get_total_size(MALLOC_CAP_DEFAULT));
   lv_label_set_text(s_value_labels[ROW_TOTAL_HEAP], heap_buf);
 
-  char fw_buf[24];
-  snprintf(fw_buf, sizeof(fw_buf), "%s %s", APP_VERSION, __DATE__);
+  // Version and build date come from the app descriptor, which the build system fills from
+  // version.txt (maintained by release-please). __DATE__ would report when this translation
+  // unit was last compiled, not when the firmware was linked.
+  const esp_app_desc_t *app = esp_app_get_description();
+  // Sized for the descriptor's declared bounds (version[32] + ' ' + date[16]), not the
+  // typical "0.2.3 Aug 10 2026" — otherwise -Wformat-truncation fails the -Werror build.
+  char fw_buf[48];
+  snprintf(fw_buf, sizeof(fw_buf), "%s %s", app->version, app->date);
   lv_label_set_text(s_value_labels[ROW_FIRMWARE], fw_buf);
 
   uint8_t mac[6];
