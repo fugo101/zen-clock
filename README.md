@@ -67,8 +67,9 @@ ZenClock/
 │   │   └── idf_component.yml
 │   ├── microlink -> ../vendor/microlink/components/microlink
 │   │                          # Tailscale VPN client (symlink → submodule)
-│   └── wireguard_lwip -> ../vendor/microlink/components/microlink/components/wireguard_lwip
+│   └── wireguard_lwip -> ../vendor/microlink/components/wireguard_lwip
 │                          # WireGuard lwIP integration (symlink → submodule)
+│                          # Third-party BSD-3 — see THIRD_PARTY.md
 ├── vendor/
 │   └── microlink/             # git submodule (branch: esp-idf-6x-compat)
 ├── include/
@@ -100,7 +101,7 @@ ZenClock/
 ### Clone
 
 ```bash
-git clone --recursive https://github.com/fudio101/zen-clock.git
+git clone --recursive https://github.com/fugo101/zen-clock.git
 ```
 
 > `--recursive` is required to initialize the `vendor/microlink` submodule.
@@ -206,7 +207,10 @@ Ensure the following settings are configured:
 
 ### Tailscale Credentials
 
-Tailscale auth key and device name are set via menuconfig (or `sdkconfig.credentials`, which is git-ignored):
+> 🔴 **`sdkconfig.lilygo-t-display-s3` IS tracked in git.** `pio run -t menuconfig` writes your auth key
+> straight into it, so committing after a menuconfig run leaks the key. Read this whole section first.
+
+Tailscale auth key and device name are Kconfig options, set via menuconfig:
 
 ```bash
 pio run -t menuconfig
@@ -215,17 +219,37 @@ pio run -t menuconfig
 #   ML_DEVICE_NAME         = zen-clock   (or leave empty for MAC-based default)
 ```
 
-Alternatively, create `sdkconfig.credentials` (git-ignored) and reference it in `platformio.ini`:
+**Then keep the key out of your commits.** PlatformIO builds ESP-IDF with a *single* sdkconfig file
+(`board_build.esp-idf.sdkconfig_path` is passed as `-DSDKCONFIG=`, it **replaces** the file rather than
+layering onto it), so there is no supported "extra credentials file" to point at. Two working options:
 
-```ini
-board_build.esp-idf.sdkconfig_extra = sdkconfig.credentials
-```
+1. **Guard script (default).** Before every commit, run:
+   ```bash
+   python3 scripts/check_secrets.py
+   ```
+   It exits non-zero if a credential Kconfig in the tracked sdkconfig is non-empty. Wire it up as a
+   pre-commit hook:
+   ```bash
+   printf '#!/bin/sh\nexec python3 scripts/check_secrets.py\n' > .git/hooks/pre-commit
+   chmod +x .git/hooks/pre-commit
+   ```
+   To build with your key but commit unrelated changes, blank the key again before staging — or use:
+   ```bash
+   git update-index --skip-worktree sdkconfig.lilygo-t-display-s3
+   ```
 
-```
-# sdkconfig.credentials
-CONFIG_ML_TAILSCALE_AUTH_KEY="tskey-auth-xxxxxxxxxxxx"
-CONFIG_ML_DEVICE_NAME="zen-clock"
-```
+2. **Local-only sdkconfig.** Point the build at an untracked copy that holds your key:
+   ```ini
+   ; platformio.ini — local edit, do not commit
+   board_build.esp-idf.sdkconfig_path = sdkconfig.local
+   ```
+   ```bash
+   cp sdkconfig.lilygo-t-display-s3 sdkconfig.local   # then set the key in sdkconfig.local
+   ```
+   `sdkconfig.local` must be a *complete* sdkconfig, not a fragment. Add it to `.gitignore`.
+
+> An earlier version of this README recommended `board_build.esp-idf.sdkconfig_extra` — **that option does
+> not exist**; PlatformIO silently ignored it, so the key was never applied from that file.
 
 > Use **reusable** auth keys for development — single-use keys expire after the first registration.
 
@@ -258,7 +282,13 @@ rendering. Place all widgets directly on the screen object. See [
 - [LVGL](https://lvgl.io/) — Light and Versatile Graphics Library
 - [Espressif esp_lvgl_port](https://github.com/espressif/esp-bsp)
 - [MicroLink](https://github.com/fudio101/microlink) — Tailscale/WireGuard client for ESP32
+- [smartalock/wireguard-lwip](https://github.com/smartalock/wireguard-lwip) — WireGuard for lwIP
+  (BSD 3-Clause, Daniel Hope / Floorsense Ltd), vendored via MicroLink
+
+See [THIRD_PARTY.md](THIRD_PARTY.md) for the full provenance and license inventory.
 
 ## License
 
-MIT
+MIT — Copyright (c) 2026 fudio101. See [LICENSE](LICENSE).
+
+Third-party components ship under their own terms; see [THIRD_PARTY.md](THIRD_PARTY.md).
