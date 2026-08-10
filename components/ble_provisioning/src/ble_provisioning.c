@@ -36,7 +36,14 @@ static const char *const tag = "BLEProv";
 #define SEC2_SALT_LEN     16
 
 static ble_prov_cb_t s_callback = NULL;
+
+// Two distinct lifetimes, previously conflated into one flag:
+//   s_active      — the provisioning service is advertising / running
+//   s_initialized — network_prov_mgr_init() succeeded and deinit() is still owed
+// NETWORK_PROV_END clears s_active before invoking the app callback, so gating teardown on
+// s_active meant ble_provisioning_stop() returned early and deinit() never ran at all.
 static bool s_active = false;
+static bool s_initialized = false;
 static bool s_mem_freed = false;
 
 // SRP6a credentials — heap-alloc'd in ble_provisioning_start(), freed on PROV_END
@@ -134,7 +141,25 @@ static void prov_event_handler(void *arg, // NOLINT(readability-non-const-parame
   case NETWORK_PROV_END:
     ESP_LOGI(tag, "Provisioning ended");
     s_active = false;
+
+    // Deinit here, matching the upstream examples (network_provisioning
+    // examples/wifi_prov/main/app_main.c:150). It has to happen before the app callback:
+    // that callback releases the BT controller, which must not be torn down while the
+    // provisioning manager still holds protocomm and the BLE scheme.
+    if (s_initialized)
+    {
+      const esp_err_t err = network_prov_mgr_deinit();
+      if (err != ESP_OK)
+      {
+        ESP_LOGE(tag, "network_prov_mgr_deinit failed: %s", esp_err_to_name(err));
+      }
+      s_initialized = false;
+    }
+
+    // Safe only now: protocomm shallow-copies sec2_params, so the salt/verifier buffers had
+    // to stay alive until the manager was torn down.
     free_sec2_credentials();
+
     if (s_callback)
     {
       s_callback(BLE_PROV_SUCCESS, NULL, NULL);
@@ -188,6 +213,7 @@ esp_err_t ble_provisioning_start(void)
     ESP_LOGE(tag, "network_prov_mgr_init failed: %s", esp_err_to_name(ret));
     return ret;
   }
+  s_initialized = true;
 
   // Generate SRP6a salt+verifier from MAC-derived password.
   // Buffers are heap-alloc'd — freed in NETWORK_PROV_END handler (or on error below).
@@ -197,6 +223,7 @@ esp_err_t ble_provisioning_start(void)
   {
     ESP_LOGE(tag, "esp_srp_gen_salt_verifier failed: %s", esp_err_to_name(ret));
     network_prov_mgr_deinit();
+    s_initialized = false;
     return ret;
   }
 
@@ -212,8 +239,9 @@ esp_err_t ble_provisioning_start(void)
   if (ret != ESP_OK)
   {
     ESP_LOGE(tag, "network_prov_mgr_start_provisioning failed: %s", esp_err_to_name(ret));
-    free_sec2_credentials();
     network_prov_mgr_deinit();
+    s_initialized = false;
+    free_sec2_credentials();
     return ret;
   }
 
@@ -223,15 +251,27 @@ esp_err_t ble_provisioning_start(void)
 
 esp_err_t ble_provisioning_stop(void) // NOLINT
 {
-  if (!s_active)
+  // Gate on s_initialized, not s_active: on the success path NETWORK_PROV_END has already
+  // cleared s_active (and done the teardown itself), while an explicit cancel can arrive with
+  // the manager initialized but not yet advertising. Both cases must be handled.
+  if (!s_initialized && !s_active)
   {
     return ESP_OK;
   }
 
-  network_prov_mgr_stop_provisioning();
-  network_prov_mgr_deinit();
+  if (s_active)
+  {
+    network_prov_mgr_stop_provisioning();
+    s_active = false;
+  }
+
+  if (s_initialized)
+  {
+    network_prov_mgr_deinit();
+    s_initialized = false;
+  }
+
   free_sec2_credentials();
-  s_active = false;
   ESP_LOGI(tag, "BLE provisioning stopped");
   return ESP_OK;
 }

@@ -37,6 +37,16 @@ extern "C"
 #define CONNECT_TIMEOUT_MS 15000 // Connection attempt timeout (ms)
 
   // ============================================================
+  // Stop — how long wifi_manager_stop() waits for the task to reach IDLE
+  // ============================================================
+
+  // Worst case the task is mid scan round (SCAN_MAX_TIME_MS × ~13 channels) or
+  // in the 300ms post-disconnect settle, so 6s covers it with headroom. Exceeding
+  // it is not fatal: wifi_manager_start() clears stale bits regardless.
+#define STOP_TIMEOUT_MS 6000
+#define STOP_POLL_MS    20
+
+  // ============================================================
   // DNS connectivity probe — verify internet after Got IP
   // ============================================================
 
