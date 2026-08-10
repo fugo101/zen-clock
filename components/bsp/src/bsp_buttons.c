@@ -29,6 +29,7 @@ static const char *const tag = "bsp_buttons";
 // which does 3072-bit mbedtls MPI work and overflowed the stack.
 #define BTN_TASK_STACK    6144
 #define BTN_TASK_PRIORITY 3
+#define BTN_QUEUE_LEN     10
 
 static constexpr int s_btn_pins[BSP_BTN_COUNT] = {PIN_BTN_BOOT, PIN_BTN_IO14};
 static bsp_button_cb_t s_callback = NULL;
@@ -152,7 +153,12 @@ void bsp_buttons_init(const bsp_button_cb_t callback)
   ESP_LOGI(tag, "Initializing buttons...");
 
   s_callback = callback;
-  s_btn_queue = xQueueCreate(10, sizeof(int));
+  s_btn_queue = xQueueCreate(BTN_QUEUE_LEN, sizeof(int));
+  if (!s_btn_queue)
+  {
+    ESP_LOGE(tag, "Failed to create button queue — buttons disabled");
+    return; // leave the ISR unregistered rather than have it push into a NULL queue
+  }
 
   // Install GPIO ISR service (ignore if already installed)
   esp_err_t err = gpio_install_isr_service(0);
@@ -176,7 +182,13 @@ void bsp_buttons_init(const bsp_button_cb_t callback)
   }
 
   // Start button processing task
-  xTaskCreatePinnedToCore(button_task, "buttons", BTN_TASK_STACK, NULL, BTN_TASK_PRIORITY, NULL, 0);
+  const BaseType_t xret =
+      xTaskCreatePinnedToCore(button_task, "buttons", BTN_TASK_STACK, NULL, BTN_TASK_PRIORITY, NULL, 0);
+  if (xret != pdPASS)
+  {
+    ESP_LOGE(tag, "Failed to create button task — buttons disabled");
+    return;
+  }
 
   ESP_LOGI(tag, "Buttons ready: GPIO%d (BOOT), GPIO%d (IO14)", PIN_BTN_BOOT, PIN_BTN_IO14);
 }

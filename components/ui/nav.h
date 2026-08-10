@@ -56,6 +56,11 @@ extern "C"
    */
   void nav_register_ntp_resync_cb(nav_action_cb_t cb);
 
+  // Enters provisioning, or re-opens the QR overlay if it is already running. Unlike the reset
+  // callback this keeps the stored credential, so backing out still leaves the device able to
+  // rejoin its AP.
+  void nav_register_provisioning_cb(nav_action_cb_t cb);
+
 #ifdef __cplusplus
 }
 #endif

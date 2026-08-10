@@ -112,8 +112,7 @@ void ui_apply_screen_bg(lv_obj_t *scr); // attach shared bg style to a new scree
 ```
 
 Screen background colors are managed via a shared `lv_style_t` so `ui_set_theme()` calls
-`lv_obj_report_style_change()` once and LVGL refreshes all screens automatically — no manual
-per-screen updates needed.
+`lv_obj_report_style_change()` once and LVGL refreshes all screens automatically — no manual per-screen updates needed.
 
 **Theme color palette:**
 
@@ -144,6 +143,7 @@ nav_action_cb_t nav_handle_action(nav_action_t action);
 void nav_register_reset_wifi_cb(nav_action_cb_t cb);
 void nav_register_sleep_cb(nav_action_cb_t cb);
 void nav_register_ntp_resync_cb(nav_action_cb_t cb);
+void nav_register_provisioning_cb(nav_action_cb_t cb);
 ```
 
 ### `clock_face.h` — clock face widget
@@ -171,8 +171,13 @@ Internal 30-second LVGL timer refreshes battery level automatically.
 
 ```c
 void prov_screen_show(const char *device_name, const char *password); // full-screen QR overlay
-void prov_screen_hide(void);                    // remove overlay, reveal clock
+void prov_screen_hide(void);                    // remove overlay, reveal clock (BLE keeps advertising)
+bool prov_screen_is_visible(void);              // overlay currently on screen?
 ```
+
+While the overlay is up, `on_button_press` swallows nav actions so no screen transition can delete it — except `BACK`,
+which hides it. Provisioning continues in the background; Settings → Network → Provisioning re-opens it. An unprovisioned
+device sits here indefinitely and must stay usable as a clock, so this is a dismissable overlay, not a modal.
 
 ### `menu_screen.h`
 
@@ -225,8 +230,8 @@ Clock screen
                                                ├─ SELECT:  enter Settings or System Info
                                                └─ BACK:    → Clock screen
 
-Settings screen (15 items with 4 section headers, scrollable — 5 visible at a time)
-  Items: Theme, Brightness | Time Format, Show Seconds, Timezone | Sleep H/M/S, Sleep Now | NTP Resync, Reset WiFi
+Settings screen (16 items with 4 section headers, scrollable — 5 visible at a time)
+  Items: Theme, Brightness | Time Format, Show Seconds, Timezone | Sleep H/M/S, Sleep Now | NTP Resync, Reset WiFi, Provisioning
   ├─ UP/DOWN: navigate items (section headers are skipped automatically)
   ├─ SELECT:  enter edit mode (TOGGLE/RANGE) or execute action (ACTION items)
   └─ BACK:    → Menu screen
@@ -236,7 +241,7 @@ Settings edit mode (TOGGLE/RANGE items only)
   ├─ SELECT:  exit edit mode
   └─ BACK:    exit edit mode
 
-Action items (Sleep Now, Reset WiFi): SELECT fires callback, no edit mode
+Action items (Sleep Now, NTP Resync, Reset WiFi, Provisioning): SELECT fires callback, no edit mode
 
 System Info screen (12 rows, 5 visible at a time)
   Rows: Chip, Firmware, MAC, Free Heap, Total Heap, Uptime, SSID, IP, Last NTP, TS Status, TS IP, Battery

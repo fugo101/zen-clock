@@ -40,9 +40,14 @@ extern "C"
   // Stop — how long wifi_manager_stop() waits for the task to reach IDLE
   // ============================================================
 
-  // Worst case the task is mid scan round (SCAN_MAX_TIME_MS × ~13 channels) or
-  // in the 300ms post-disconnect settle, so 6s covers it with headroom. Exceeding
-  // it is not fatal: wifi_manager_start() clears stale bits regardless.
+  // Covers the bounded paths: one scan round (SCAN_MAX_TIME_MS × ~13 channels ≈ 4s), the
+  // stop-aware connect wait, and the 300ms post-disconnect settle.
+  //
+  // It does NOT bound VERIFYING. getaddrinfo() in do_dns_probe() takes no timeout argument and
+  // is capped only by lwIP's DNS retries, which on a dead link can exceed this budget on its own
+  // — and wifi_manager_stop() makes that worse by disconnecting first, killing the route out from
+  // under the in-flight lookup. Callers must therefore treat ESP_ERR_TIMEOUT as reachable in
+  // normal use rather than as an impossible error.
 #define STOP_TIMEOUT_MS 6000
 #define STOP_POLL_MS    20
 
