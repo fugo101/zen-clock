@@ -3,6 +3,7 @@
 //
 // Manages screen transitions: Clock ↔ Menu ↔ Settings (list/edit)
 // All functions must be called while holding the LVGL port lock.
+// Exception: the callback returned by nav_handle_action() must be run *without* it.
 
 #include "nav.h"
 #include "ui.h"
@@ -181,8 +182,11 @@ void nav_register_ntp_resync_cb(nav_action_cb_t cb)
   s_ntp_resync_cb = cb;
 }
 
-void nav_handle_action(nav_action_t action)
+nav_action_cb_t nav_handle_action(nav_action_t action)
 {
+  // Resolved here, run by the caller after the LVGL lock is released — see nav.h.
+  nav_action_cb_t deferred = NULL;
+
   switch (s_state)
   {
   // ========== CLOCK ==========
@@ -257,7 +261,7 @@ void nav_handle_action(nav_action_t action)
         {
           cb = s_reset_wifi_cb;
         }
-        settings_screen_execute_action(s_settings_focus, cb);
+        deferred = settings_screen_resolve_action(s_settings_focus, cb);
       }
       else
       {
@@ -309,4 +313,6 @@ void nav_handle_action(nav_action_t action)
     }
     break;
   }
+
+  return deferred;
 }

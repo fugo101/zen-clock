@@ -27,8 +27,16 @@ extern "C"
   /**
    * @brief Process a navigation action from button input.
    * Must be called while holding LVGL lock.
+   *
+   * @return Deferred work, or NULL. The caller MUST invoke the returned callback only
+   *         *after* releasing the LVGL lock. Action items block for seconds
+   *         (wifi_manager_stop() polls up to 6s, NVS erase, BLE bring-up + SRP), and
+   *         running them under the lock freezes rendering and stalls every other task
+   *         that needs it — including the esp_event loop, which BLE provisioning
+   *         itself depends on. Nothing in this function touches LVGL after resolving
+   *         the callback, so deferring it is safe.
    */
-  void nav_handle_action(nav_action_t action);
+  nav_action_cb_t nav_handle_action(nav_action_t action);
 
   /**
    * @brief Register callback for "Reset Wi-Fi" action.
