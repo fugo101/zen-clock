@@ -486,22 +486,20 @@ bool settings_screen_is_action_item(int index)
   return s_items[index].type == STYPE_ACTION;
 }
 
-void settings_screen_execute_action(int index, nav_action_cb_t cb)
+nav_action_cb_t settings_screen_resolve_action(int index, nav_action_cb_t cb)
 {
   if (index < 0 || index >= SETTINGS_ITEM_COUNT)
   {
-    return;
+    return NULL;
   }
   if (s_items[index].type != STYPE_ACTION)
   {
-    return;
+    return NULL;
   }
 
-  ESP_LOGW(tag, "Executing action: %s", s_items[index].label);
-  if (cb)
-  {
-    cb();
-  }
+  // Returned rather than called: the caller runs it once the LVGL lock is released.
+  ESP_LOGW(tag, "Action selected: %s", s_items[index].label);
+  return cb;
 }
 
 void settings_screen_enter_edit(int index)

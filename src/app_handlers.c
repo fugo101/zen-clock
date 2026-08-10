@@ -26,8 +26,16 @@ static const char *const tag = "ZenClock";
 static esp_timer_handle_t s_reconnect_timer = NULL;
 static esp_timer_handle_t s_ts_poll_timer = NULL;
 static int s_reconnect_backoff_s = 30;
+
+// How long ts_poll_cb waits for the LVGL lock before giving up on this tick.
+#define TS_POLL_LOCK_TIMEOUT_MS 50
 static bool s_sntp_started = false;
-static microlink_t *s_ml = NULL;
+
+// Written once by the wifi_mgr task; read by the esp_timer task in ts_poll_cb(). No lock:
+// the ts_poll timer is only armed *after* the assignment below, so a reader can never
+// observe the pre-init value, and the rebind path does not reassign it. volatile keeps the
+// compiler from caching the pointer across the two task contexts.
+static microlink_t *volatile s_ml = NULL;
 
 // NOLINTNEXTLINE(readability-non-const-parameter)
 static void reconnect_timer_cb(void *arg)
@@ -84,7 +92,15 @@ static void ts_poll_cb(void *arg)
     ts = TS_STATUS_CONNECTING;
     break;
   }
-  lvgl_port_lock(0);
+  // Bounded wait. lvgl_port_lock(0) means portMAX_DELAY, not try-lock, and this callback
+  // runs on the shared esp_timer task — blocking here would also stall inactivity_cb
+  // (deep sleep) and reconnect_timer_cb (WiFi retry). Status is re-polled in 10s, so
+  // dropping a tick costs nothing. On failure the mutex is NOT held: do not unlock.
+  if (!lvgl_port_lock(TS_POLL_LOCK_TIMEOUT_MS))
+  {
+    ESP_LOGD(tag, "LVGL busy — skipping Tailscale status tick");
+    return;
+  }
   status_bar_set_ts_status(ts);
   lvgl_port_unlock();
 }
@@ -168,8 +184,18 @@ void on_button_press(const int btn_id, const bsp_btn_event_t event)
   }
 
   lvgl_port_lock(0);
-  nav_handle_action(action);
+  nav_action_cb_t deferred = nav_handle_action(action);
   lvgl_port_unlock();
+
+  // Run action items only after the lock is released. do_reset_wifi() alone can hold the
+  // CPU for seconds (wifi_manager_stop polls up to 6s, NVS erase, BLE bring-up + SRP), and
+  // doing that under the lock froze the display and stalled the esp_event loop — which
+  // BLE provisioning needs to deliver its own BLE_PROV_STARTED. nav_handle_action() touches
+  // no LVGL after resolving this, and the emergency path above already runs it lock-free.
+  if (deferred)
+  {
+    deferred();
+  }
 }
 
 // ============================================================
@@ -316,7 +342,13 @@ void on_wifi_event(const wifi_manager_event_t event)
       if (s_ml)
       {
         microlink_start(s_ml);
+        // device_info_screen_set_ml() writes a static handle and then updates labels via
+        // lv_label_set_text(). This runs on the wifi_mgr task, so it has to be serialized
+        // against the LVGL task — including the screen's own 10s timer, which calls the
+        // very same update_tailscale().
+        lvgl_port_lock(0);
         device_info_screen_set_ml(s_ml);
+        lvgl_port_unlock();
         if (!s_ts_poll_timer)
         {
           const esp_timer_create_args_t ts_args = {.callback = ts_poll_cb, .name = "ts_poll"};
@@ -331,8 +363,11 @@ void on_wifi_event(const wifi_manager_event_t event)
     }
     else
     {
+      // Kept outside the lock — microlink_rebind() vTaskDelays ~300ms reopening sockets.
       microlink_rebind(s_ml);
+      lvgl_port_lock(0);
       device_info_screen_set_ml(s_ml);
+      lvgl_port_unlock();
     }
     break;
 

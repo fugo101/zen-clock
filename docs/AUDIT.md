@@ -64,14 +64,21 @@ nav action callbacks off the lock.
 
 ---
 
-## Phase 2 — Concurrency & LVGL safety
+## Phase 2 — Concurrency & LVGL safety  ✅ done
 
 | | Sev | Where | Issue |
 |---|---|---|---|
-| [ ] | 🟠 | `app_handlers.c:319,335` | `device_info_screen_set_ml()` → `lv_label_set_text()` called from the wifi task **without `lvgl_port_lock`**. Every other LVGL call in the file is locked. |
-| [ ] | 🟠 | `app_handlers.c:87` | `ts_poll_cb` uses `lvgl_port_lock(0)` = `portMAX_DELAY` on the shared esp_timer task → blocks deep-sleep and wifi-retry timers behind it. Use `lvgl_port_lock(50)` and skip the poll on failure. |
-| [ ] | 🟠 | `app_handlers.c:170-172` → `nav.c:260` | `nav_handle_action()` runs entirely under the LVGL lock, including Reset WiFi (BLE bring-up + SRP + NVS + possible `esp_restart`) and per-keypress `nvs_commit`. Defer action callbacks to a worker. |
-| [ ] | 🟡 | `app_handlers.c:30,315,334` + `ts_poll_cb` | `s_ml` written by the wifi task, read by the esp_timer task and an LVGL timer, unsynchronized. |
+| [x] | 🟠 | `app_handlers.c:319,335` | `device_info_screen_set_ml()` → `lv_label_set_text()` called from the wifi task **without `lvgl_port_lock`**. Both calls now wrapped. This also closes the real race on `device_info_screen.c`'s static `s_ml_handle`, which the screen's own 10s LVGL timer re-reads inside the same `update_tailscale()`. `microlink_rebind()` stays outside the lock — it `vTaskDelay`s ~300ms. |
+| [x] | 🟠 | `app_handlers.c:87` | `ts_poll_cb` used `lvgl_port_lock(0)`, which is `portMAX_DELAY`, **not** a try-lock (verified at `esp_lvgl_port.c:142-154`) — on the shared esp_timer task that also stalls `inactivity_cb` (deep sleep) and `reconnect_timer_cb` (WiFi retry). Now a bounded 50ms wait that skips the tick on failure, and **checks the return**: on timeout the mutex is not held, so unlocking would give a recursive mutex we do not own. |
+| [x] | 🟠 | `app_handlers.c:170-172` → `nav.c:260` | Action items ran under the LVGL lock — Reset WiFi alone is `wifi_manager_stop()` (polls up to 6s since Phase 1) + NVS erase + BLE bring-up + SRP. `nav_handle_action()` now **returns** the callback and `on_button_press` runs it after `lvgl_port_unlock()`; `settings_screen_execute_action()` became `settings_screen_resolve_action()`. No worker task was needed: nothing on that path touches LVGL after the callback is resolved, and the emergency path already ran the same callbacks lock-free. Also unblocks the esp_event loop, which `BLE_PROV_STARTED` needs while `do_reset_wifi()` is running. |
+| [~] | 🟡 | `app_handlers.c:30` | `s_ml` shared across tasks — **the audit overstated this; it is not a live race.** `s_ml` is written exactly once by the wifi task and the `ts_poll` timer is armed only *after* that write, so a reader cannot observe the pre-init value; the rebind path never reassigns it. `microlink_get_state()`/`get_vpn_ip()` are plain 32-bit `volatile` field reads documented upstream as "atomic reads from any task" (`microlink_internal.h:337`). Marked `volatile` with the ordering written down — hardening, not a bug fix. No mutex added. |
+
+**Outcome:** Reset WiFi no longer freezes the display. That freeze was introduced by Phase 1 (which
+made `wifi_manager_stop()` block, correctly) and was flagged there as Phase 2 work.
+
+**Deliberately left for Phase 4:** `apply_change()` still does an `nvs_commit` per UP/DOWN press under
+the lock (~11 flash writes in 2s holding UP on Brightness). It changes *when* settings persist and
+needs its own testing, so it stays with the debounce work rather than riding along here.
 
 ---
 

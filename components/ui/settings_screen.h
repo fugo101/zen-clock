@@ -23,11 +23,16 @@ extern "C"
   bool settings_screen_is_action_item(int index);
 
   /**
-   * @brief Execute an action item (e.g., Reset WiFi).
+   * @brief Resolve an action item (e.g., Reset WiFi) to the callback that should run.
+   *
+   * Deliberately does *not* invoke the callback: these block for seconds and must run
+   * outside the LVGL lock. See nav_handle_action().
+   *
    * @param index   Item index
    * @param cb      External callback (from app_handlers via nav)
+   * @return `cb` when `index` is a valid action item, NULL otherwise.
    */
-  void settings_screen_execute_action(int index, nav_action_cb_t cb);
+  nav_action_cb_t settings_screen_resolve_action(int index, nav_action_cb_t cb);
 
   /** Enter edit mode for the focused item. */
   void settings_screen_enter_edit(int index);

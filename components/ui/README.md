@@ -136,7 +136,11 @@ typedef enum {
 typedef void (*nav_action_cb_t)(void);
 
 void nav_init(void);
-void nav_handle_action(nav_action_t action);
+
+// Returns deferred work, or NULL. Call it only AFTER releasing the LVGL lock —
+// action items block for seconds (WiFi stop, NVS, BLE bring-up).
+nav_action_cb_t nav_handle_action(nav_action_t action);
+
 void nav_register_reset_wifi_cb(nav_action_cb_t cb);
 void nav_register_sleep_cb(nav_action_cb_t cb);
 void nav_register_ntp_resync_cb(nav_action_cb_t cb);
@@ -205,7 +209,7 @@ void settings_screen_focus_next(void);
 int  settings_screen_get_focus(void);
 void settings_screen_set_focus(int index);
 bool settings_screen_is_action_item(int index);
-void settings_screen_execute_action(int index, nav_action_cb_t cb);
+nav_action_cb_t settings_screen_resolve_action(int index, nav_action_cb_t cb);
 void settings_screen_enter_edit(int index);
 void settings_screen_exit_edit(void);
 void settings_screen_edit_increase(void);
