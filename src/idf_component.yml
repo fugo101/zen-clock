@@ -2,9 +2,7 @@
 ## ZenClock — managed dependencies for LVGL + esp_lvgl_port
 dependencies:
   espressif/esp_lvgl_port:
-    git: https://github.com/espressif/esp-bsp.git
-    path: components/esp_lvgl_port
-    pre_release: true
+    version: "^2.9.0"
   lvgl/lvgl:
     version: "^9"
     public: true
