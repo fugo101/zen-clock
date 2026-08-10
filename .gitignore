@@ -3,7 +3,18 @@
 .idea/
 .cache/
 .agent/
+.rtk/
+.venv/
 example/
 managed_components/
 
 compile_commands.json
+
+# Credentials — never commit. See README → Tailscale Credentials.
+sdkconfig.credentials
+sdkconfig.*.credentials
+
+# Local / editor cruft
+.DS_Store
+sdkconfig.*.old
+*.orig

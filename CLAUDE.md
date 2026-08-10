@@ -71,7 +71,7 @@ All event callbacks and nav wiring live here:
 | `components/deep_sleep/`       | Auto-sleep timer (inactivity) + manual trigger + ext1 wakeup on GPIO0/GPIO14     |
 | `components/lcd_backlight/`    | LCD backlight driver via LEDC PWM                                                |
 | `components/microlink/`        | Tailscale VPN client — symlink → `vendor/microlink/components/microlink`         |
-| `components/wireguard_lwip/`   | WireGuard lwIP netif — symlink → `vendor/microlink/.../wireguard_lwip`           |
+| `components/wireguard_lwip/`   | WireGuard lwIP netif — symlink → `vendor/microlink/.../wireguard_lwip`. Third-party BSD-3 ([smartalock/wireguard-lwip](https://github.com/smartalock/wireguard-lwip)), diverged fork — see `THIRD_PARTY.md` before syncing |
 
 ### UI Component (`components/ui/`)
 
