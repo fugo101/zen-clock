@@ -224,6 +224,9 @@ esp_err_t ble_provisioning_start(void)
     ESP_LOGE(tag, "esp_srp_gen_salt_verifier failed: %s", esp_err_to_name(ret));
     network_prov_mgr_deinit();
     s_initialized = false;
+    // Both buffers are out-params: a partial failure can leave one of them allocated, and the
+    // next successful start() would overwrite the pointer and leak it.
+    free_sec2_credentials();
     return ret;
   }
 

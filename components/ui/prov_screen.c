@@ -119,3 +119,8 @@ void prov_screen_hide(void)
   lv_obj_delete(s_overlay);
   s_overlay = NULL;
 }
+
+bool prov_screen_is_visible(void)
+{
+  return s_overlay != NULL;
+}

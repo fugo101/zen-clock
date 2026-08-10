@@ -37,11 +37,13 @@ static int s_settings_focus = 0;
 static nav_action_cb_t s_reset_wifi_cb = NULL;
 static nav_action_cb_t s_sleep_cb = NULL;
 static nav_action_cb_t s_ntp_resync_cb = NULL;
+static nav_action_cb_t s_provisioning_cb = NULL;
 
 // Settings item indices for action routing
-#define SETTINGS_IDX_SLEEP_NOW  11
-#define SETTINGS_IDX_NTP_RESYNC 13
-#define SETTINGS_IDX_RESET_WIFI 14
+#define SETTINGS_IDX_SLEEP_NOW    11
+#define SETTINGS_IDX_NTP_RESYNC   13
+#define SETTINGS_IDX_RESET_WIFI   14
+#define SETTINGS_IDX_PROVISIONING 15
 
 // ============================================================
 // Screen switching helpers
@@ -182,6 +184,11 @@ void nav_register_ntp_resync_cb(nav_action_cb_t cb)
   s_ntp_resync_cb = cb;
 }
 
+void nav_register_provisioning_cb(nav_action_cb_t cb)
+{
+  s_provisioning_cb = cb;
+}
+
 nav_action_cb_t nav_handle_action(nav_action_t action)
 {
   // Resolved here, run by the caller after the LVGL lock is released — see nav.h.
@@ -260,6 +267,10 @@ nav_action_cb_t nav_handle_action(nav_action_t action)
         else if (s_settings_focus == SETTINGS_IDX_RESET_WIFI)
         {
           cb = s_reset_wifi_cb;
+        }
+        else if (s_settings_focus == SETTINGS_IDX_PROVISIONING)
+        {
+          cb = s_provisioning_cb;
         }
         deferred = settings_screen_resolve_action(s_settings_focus, cb);
       }

@@ -13,7 +13,7 @@
 //   RANGE  — increments/decrements numeric value (Brightness, Sleep H/M/S, Timezone)
 //   ACTION — executes on select, no edit mode (Sleep Now, NTP Resync, Reset Wi-Fi)
 //
-// Layout (15 items, 4 headers):
+// Layout (16 items, 4 headers):
 //   [0] ── Display ──  HEADER
 //   [1] Theme          TOGGLE
 //   [2] Brightness     RANGE
@@ -29,6 +29,7 @@
 //  [12] ── Network ──  HEADER
 //  [13] NTP Resync     ACTION
 //  [14] Reset WiFi     ACTION
+//  [15] Provisioning   ACTION  (enter provisioning / re-open QR; keeps the credential)
 
 #include "settings_screen.h"
 #include "ui_utils.h"
@@ -73,7 +74,7 @@ static const char *s_theme_options[] = {"Dark", "Light"};
 static const char *s_format_options[] = {"24H", "12H"};
 static const char *s_secs_options[] = {"On", "Off"};
 
-#define SETTINGS_ITEM_COUNT 15
+#define SETTINGS_ITEM_COUNT 16
 #define SETTINGS_VISIBLE    5 // items shown at once (5×24px = 120px <= 170-50=120px)
 
 static setting_item_t s_items[SETTINGS_ITEM_COUNT] = {
@@ -92,6 +93,7 @@ static setting_item_t s_items[SETTINGS_ITEM_COUNT] = {
     {.label = "- Network -", .type = STYPE_HEADER},
     {.label = "NTP Resync", .type = STYPE_ACTION},
     {.label = "Reset WiFi", .type = STYPE_ACTION},
+    {.label = "Provisioning", .type = STYPE_ACTION},
 };
 
 // ============================================================

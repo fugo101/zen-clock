@@ -44,6 +44,15 @@ extern "C"
 
   /**
    * @brief Stop BLE provisioning and deinit the manager.
+   *
+   * @warning Do NOT wire this to a user-facing "cancel". NETWORK_PROV_END means "the service
+   *          stopped", not "provisioning succeeded", and the event handler reports every END as
+   *          BLE_PROV_SUCCESS. The app's BLE_PROV_SUCCESS path calls
+   *          ble_provisioning_release_memory(), which frees ~110 KB of BT RAM permanently — so a
+   *          cancel would silently make the device unprovisionable until reflashed.
+   *          Currently safe only because the single call site is inside that success handler.
+   *          Adding a cancel requires distinguishing the outcome first (latch
+   *          NETWORK_PROV_WIFI_CRED_SUCCESS and branch on it in the END case).
    */
   esp_err_t ble_provisioning_stop(void);
 

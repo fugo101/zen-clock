@@ -28,7 +28,6 @@ static const char *tag = "WiFiMgr";
 // Event group bits — set by event handler, consumed by task
 // ============================================================
 #define BIT_GOT_IP       BIT0
-#define BIT_FAIL         BIT1
 #define BIT_STA_START    BIT2
 #define BIT_DISCONNECTED BIT3
 #define BIT_STOP         BIT4
@@ -53,6 +52,11 @@ static wifi_ap_record_t s_match_ap;
 
 // AP list buffer — allocated once in wifi_task, reused across scans
 static wifi_ap_record_t *s_ap_list = NULL;
+
+// True only while the task is blocked in ulTaskNotifyTake() in the IDLE state — i.e. genuinely
+// parked, not merely passing through IDLE. Written by the wifi task, polled by wifi_manager_stop()
+// from another task, hence volatile.
+static volatile bool s_task_parked = false;
 
 // ============================================================
 // State helpers (thread-safe)
@@ -111,7 +115,7 @@ static bool check_stop_signal(void)
   const EventBits_t bits = xEventGroupGetBits(s_event_group);
   if (bits & BIT_STOP)
   {
-    xEventGroupClearBits(s_event_group, BIT_STOP | BIT_GOT_IP | BIT_FAIL | BIT_DISCONNECTED);
+    xEventGroupClearBits(s_event_group, BIT_STOP | BIT_GOT_IP | BIT_DISCONNECTED);
     ESP_LOGI(tag, "Stop signal received");
     set_state(WIFI_ST_IDLE);
     return true;
@@ -230,9 +234,9 @@ static int do_aggregated_scan(wifi_ap_record_t *merged, int max_aps) // NOLINT
 
   for (int round = 0; round < SCAN_ROUNDS; round++)
   {
-    // esp_wifi_scan_start() below blocks for up to SCAN_MAX_TIME_MS per channel, so a stop
-    // request issued mid-scan would otherwise not be noticed until all rounds finish (~12s),
-    // and BLE provisioning would start while the radio is still scanning.
+    // esp_wifi_scan_start() below is blocking and there is no scan_stop() anywhere, so a stop
+    // request can only be honoured between rounds — this caps the wait at one round (~4s)
+    // instead of all three (~12s), after which BLE provisioning would race the live radio.
     if (xEventGroupGetBits(s_event_group) & BIT_STOP)
     {
       ESP_LOGI(tag, "Stop requested — aborting scan after %d round(s)", round);
@@ -357,7 +361,7 @@ static bool try_connect_candidate(const wifi_ap_record_t *ap, const char *passwo
     vTaskDelay(pdMS_TO_TICKS(300));
   }
 
-  xEventGroupClearBits(s_event_group, BIT_GOT_IP | BIT_FAIL | BIT_DISCONNECTED);
+  xEventGroupClearBits(s_event_group, BIT_GOT_IP | BIT_DISCONNECTED);
   esp_wifi_connect();
 
   // BIT_STOP is in the wait mask so a stop request cuts the 15s wait short, but clearOnExit
@@ -413,11 +417,27 @@ static bool do_dns_probe(void)
       return true;
     }
     ESP_LOGD(tag, "DNS probe %d/%d failed", probe + 1, DNS_PROBE_MAX);
-    vTaskDelay(pdMS_TO_TICKS(DNS_PROBE_INTERVAL_MS));
+
+    // Wait instead of vTaskDelay so a stop or a disconnect cuts the pause short. A plain delay
+    // here meant wifi_manager_stop() had to sit through up to DNS_PROBE_INTERVAL_MS per attempt
+    // on top of getaddrinfo(). Skipped after the last attempt — it bought nothing but latency.
+    if (probe + 1 < DNS_PROBE_MAX)
+    {
+      const EventBits_t waited = xEventGroupWaitBits(s_event_group, BIT_STOP | BIT_DISCONNECTED, pdFALSE, pdFALSE,
+                                                     pdMS_TO_TICKS(DNS_PROBE_INTERVAL_MS));
+      if (waited & (BIT_STOP | BIT_DISCONNECTED))
+      {
+        ESP_LOGW(tag, "Connection lost during DNS probe");
+        return false;
+      }
+    }
   }
 
-  ESP_LOGW(tag, "DNS probe timed out — assuming connected");
-  return true; // Fallback: proceed even without confirmed internet
+  // No internet confirmed. The caller still treats the link as usable — a LAN-only or
+  // captive-portal network is a working network for everything except NTP — but this is a
+  // genuine negative result, not a success.
+  ESP_LOGW(tag, "DNS probe failed after %d attempts — no confirmed internet", DNS_PROBE_MAX);
+  return false;
 }
 
 // ============================================================
@@ -435,7 +455,8 @@ static void wifi_task(void *arg) // NOLINT(readability-non-const-parameter)
   if (ret != ESP_OK)
   {
     ESP_LOGE(tag, "esp_wifi_start failed: %s — task halted", esp_err_to_name(ret));
-    for (;;) // NOLINT
+    s_task_parked = true; // halted for good — let wifi_manager_stop() return at once
+    for (;;)              // NOLINT
     {
       ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     }
@@ -447,7 +468,8 @@ static void wifi_task(void *arg) // NOLINT(readability-non-const-parameter)
   if (!s_ap_list)
   {
     ESP_LOGE(tag, "Failed to allocate AP buffer — task halted");
-    for (;;) // NOLINT
+    s_task_parked = true; // halted for good — let wifi_manager_stop() return at once
+    for (;;)              // NOLINT
     {
       ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     }
@@ -471,7 +493,14 @@ static void wifi_task(void *arg) // NOLINT(readability-non-const-parameter)
     case WIFI_ST_IDLE:
     {
       s_connected_ssid[0] = '\0';
+
+      // s_task_parked is what wifi_manager_stop() actually waits on. The state alone is not
+      // enough: it still reads IDLE from here until set_state() below, across an NVS read and
+      // esp_wifi_sta_get_ap_info() — a stop landing in that window would otherwise be told the
+      // task had settled while it was in fact about to start a full scan.
+      s_task_parked = true;
       ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+      s_task_parked = false;
 
       // Load single credential from NVS
       if (!wifi_cred_load(s_ssid, sizeof(s_ssid), s_pass, sizeof(s_pass)))
@@ -492,7 +521,7 @@ static void wifi_task(void *arg) // NOLINT(readability-non-const-parameter)
         ESP_LOGI(tag, "Already connected to \"%s\" — skipping scan+connect", s_ssid);
         strncpy(s_connected_ssid, s_ssid, SSID_MAX_LEN - 1);
         s_connected_ssid[SSID_MAX_LEN - 1] = '\0';
-        xEventGroupClearBits(s_event_group, BIT_GOT_IP | BIT_DISCONNECTED | BIT_FAIL);
+        xEventGroupClearBits(s_event_group, BIT_GOT_IP | BIT_DISCONNECTED);
         set_state(WIFI_ST_VERIFYING);
         break;
       }
@@ -606,7 +635,7 @@ static void wifi_task(void *arg) // NOLINT(readability-non-const-parameter)
     // ────────────────────────────────────────────
     case WIFI_ST_VERIFYING:
     {
-      do_dns_probe();
+      const bool internet_ok = do_dns_probe();
 
       EventBits_t bits = xEventGroupGetBits(s_event_group);
 
@@ -627,6 +656,14 @@ static void wifi_task(void *arg) // NOLINT(readability-non-const-parameter)
         break;
       }
 
+      // Deliberately still CONNECTED when the probe failed: the association and the IP lease are
+      // real, and demoting here would stop SNTP and MicroLink from ever starting on a LAN-only
+      // network. Surfacing "connected but unverified" in the UI is a separate change.
+      if (!internet_ok)
+      {
+        ESP_LOGW(tag, "Entering CONNECTED without confirmed internet access");
+      }
+
       set_state(WIFI_ST_CONNECTED);
       fire_event(WIFI_MGR_CONNECTED);
       break;
@@ -640,18 +677,24 @@ static void wifi_task(void *arg) // NOLINT(readability-non-const-parameter)
       EventBits_t bits =
           xEventGroupWaitBits(s_event_group, BIT_DISCONNECTED | BIT_STOP, pdTRUE, pdFALSE, portMAX_DELAY);
 
+      // Both bits were consumed by clearOnExit above, so this state sets IDLE itself rather
+      // than falling through to check_stop_signal() at the loop top.
       if (bits & BIT_STOP)
       {
-        xEventGroupClearBits(s_event_group, BIT_STOP | BIT_DISCONNECTED);
         set_state(WIFI_ST_IDLE);
       }
       else if (bits & BIT_DISCONNECTED)
       {
         fire_event(WIFI_MGR_DISCONNECTED);
-        set_state(WIFI_ST_IDLE); // No auto-retry — BLE provisioning handles reconnect
+        set_state(WIFI_ST_IDLE); // No auto-retry — the app schedules the reconnect
       }
       break;
     }
+
+    default:
+      ESP_LOGE(tag, "Invalid state %d — resetting to IDLE", (int) get_state());
+      set_state(WIFI_ST_IDLE);
+      break;
 
     } // switch
   } // for(;;)
@@ -716,7 +759,7 @@ esp_err_t wifi_manager_start(void)
   // stop requested in IDLE stays latched. Without this, the first loop iteration after the
   // notification would consume that stale bit, drop straight back to IDLE and fire no event
   // at all — leaving the device offline until reboot, with no reconnect scheduled.
-  xEventGroupClearBits(s_event_group, BIT_STOP | BIT_GOT_IP | BIT_FAIL | BIT_DISCONNECTED);
+  xEventGroupClearBits(s_event_group, BIT_STOP | BIT_GOT_IP | BIT_DISCONNECTED);
 
   xTaskNotifyGive(s_task_handle);
   return ESP_OK;
@@ -731,23 +774,27 @@ esp_err_t wifi_manager_stop(void)
 {
   ESP_LOGI(tag, "Stopping WiFi...");
 
-  if (get_state() == WIFI_ST_IDLE)
-  {
-    // Already idle: the task is parked in ulTaskNotifyTake() and would never consume BIT_STOP.
-    // Setting it here would only leave a stale bit behind, so just make sure the radio is down.
-    esp_wifi_disconnect();
-    return ESP_OK;
-  }
-
+  // Always set BIT_STOP, even when the state reads IDLE. An earlier version skipped it to avoid
+  // leaving a stale bit behind, but IDLE is also the state the task passes through on its way out
+  // of ulTaskNotifyTake(), so skipping it let the task walk straight into a full scan while the
+  // caller believed WiFi had stopped. A latched bit is harmless: wifi_manager_start() clears it.
   xEventGroupSetBits(s_event_group, BIT_STOP);
   esp_wifi_disconnect();
 
-  // Block until the task has actually unwound to IDLE. Callers (do_reset_wifi) start BLE
-  // provisioning immediately afterwards, and network_prov_mgr conflicts with a radio that is
-  // still scanning or associating.
+  // Called from the wifi task itself — fire_event(WIFI_MGR_NO_CRED) reaches on_wifi_event, which
+  // stops WiFi before starting provisioning. Waiting here would be waiting on ourselves; the task
+  // consumes BIT_STOP at the loop top as soon as the callback returns.
+  if (xTaskGetCurrentTaskHandle() == s_task_handle)
+  {
+    return ESP_OK;
+  }
+
+  // Block until the task has actually parked. Callers (do_reset_wifi) start BLE provisioning
+  // immediately afterwards, and network_prov_mgr conflicts with a radio that is still scanning
+  // or associating.
   for (int waited = 0; waited < STOP_TIMEOUT_MS; waited += STOP_POLL_MS)
   {
-    if (get_state() == WIFI_ST_IDLE)
+    if (get_state() == WIFI_ST_IDLE && s_task_parked)
     {
       return ESP_OK;
     }

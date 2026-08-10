@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <stdbool.h>
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -19,8 +21,17 @@ extern "C"
   /**
    * @brief Remove the provisioning overlay, revealing the clock screen.
    * Must be called while holding the LVGL port lock.
+   *
+   * Hiding the overlay does NOT stop provisioning — BLE keeps advertising and a phone can still
+   * complete the flow. It only gives the screen back so the clock stays usable.
    */
   void prov_screen_hide(void);
+
+  /**
+   * @brief Whether the overlay is currently on screen.
+   * Must be called while holding the LVGL port lock.
+   */
+  bool prov_screen_is_visible(void);
 
 #ifdef __cplusplus
 }

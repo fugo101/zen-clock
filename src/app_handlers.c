@@ -25,10 +25,19 @@ static const char *const tag = "ZenClock";
 
 static esp_timer_handle_t s_reconnect_timer = NULL;
 static esp_timer_handle_t s_ts_poll_timer = NULL;
-static int s_reconnect_backoff_s = 30;
+
+// Reconnect backoff: 30s doubling to 5min. RECONNECT_BUSY_RETRY_S is the short re-arm used when
+// wifi_manager_start() refuses because the previous attempt has not unwound yet — that is not a
+// failed attempt, so it must not consume a backoff step.
+#define RECONNECT_BACKOFF_START_S 30
+#define RECONNECT_BACKOFF_MAX_S   300
+#define RECONNECT_BUSY_RETRY_S    5
+
+static int s_reconnect_backoff_s = RECONNECT_BACKOFF_START_S;
 
 // How long ts_poll_cb waits for the LVGL lock before giving up on this tick.
 #define TS_POLL_LOCK_TIMEOUT_MS 50
+#define TS_POLL_PERIOD_US       (10ULL * 1000000ULL)
 static bool s_sntp_started = false;
 
 // Written once by the wifi_mgr task; read by the esp_timer task in ts_poll_cb(). No lock:
@@ -37,23 +46,64 @@ static bool s_sntp_started = false;
 // compiler from caching the pointer across the two task contexts.
 static microlink_t *volatile s_ml = NULL;
 
+static bool schedule_reconnect_in(int delay_s);
+
+// The device must survive an indefinite outage: no WiFi, or out of range. Every path out of this
+// callback has to leave exactly one retry armed, or the clock goes offline until it is rebooted.
 // NOLINTNEXTLINE(readability-non-const-parameter)
 static void reconnect_timer_cb(void *arg)
 {
   (void) arg;
-  wifi_manager_start();
+  const esp_err_t ret = wifi_manager_start();
+  if (ret != ESP_OK)
+  {
+    // Almost always ESP_ERR_INVALID_STATE: the previous attempt is still unwinding. A failed
+    // scan+connect+verify cycle can outlast the initial 30s backoff, so this is reached in
+    // normal operation — and the timer is one-shot and has already fired, so returning here
+    // without re-arming would end retrying altogether.
+    ESP_LOGW(tag, "Reconnect skipped (%s) — retrying shortly", esp_err_to_name(ret));
+    schedule_reconnect_in(RECONNECT_BUSY_RETRY_S);
+  }
 }
 
-static void schedule_reconnect(void)
+// Arms the one-shot retry timer. Returns whether a retry is now pending.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+static bool schedule_reconnect_in(const int delay_s)
 {
   if (!s_reconnect_timer)
   {
     const esp_timer_create_args_t args = {.callback = reconnect_timer_cb, .name = "wifi_rc"};
-    esp_timer_create(&args, &s_reconnect_timer);
+    const esp_err_t cret = esp_timer_create(&args, &s_reconnect_timer);
+    if (cret != ESP_OK)
+    {
+      ESP_LOGE(tag, "esp_timer_create(wifi_rc) failed: %s — WiFi will not retry", esp_err_to_name(cret));
+      s_reconnect_timer = NULL;
+      return false;
+    }
   }
-  esp_timer_start_once(s_reconnect_timer, (uint64_t) s_reconnect_backoff_s * 1000000ULL);
-  ESP_LOGI(tag, "WiFi offline — retry in %ds", s_reconnect_backoff_s);
-  s_reconnect_backoff_s = (s_reconnect_backoff_s * 2 > 300) ? 300 : s_reconnect_backoff_s * 2;
+
+  // start_once() on an already-armed timer returns ESP_ERR_INVALID_STATE and does nothing.
+  esp_timer_stop(s_reconnect_timer);
+
+  const esp_err_t ret = esp_timer_start_once(s_reconnect_timer, (uint64_t) delay_s * 1000000ULL);
+  if (ret != ESP_OK)
+  {
+    ESP_LOGE(tag, "Failed to arm reconnect timer: %s", esp_err_to_name(ret));
+    return false;
+  }
+  ESP_LOGI(tag, "WiFi offline — retry in %ds", delay_s);
+  return true;
+}
+
+static void schedule_reconnect(void)
+{
+  // Advance the backoff only when something was actually armed. Otherwise a burst of failure
+  // events inflates the delay while leaving no retry pending at all.
+  if (schedule_reconnect_in(s_reconnect_backoff_s))
+  {
+    s_reconnect_backoff_s =
+        (s_reconnect_backoff_s * 2 > RECONNECT_BACKOFF_MAX_S) ? RECONNECT_BACKOFF_MAX_S : s_reconnect_backoff_s * 2;
+  }
 }
 
 static void cancel_reconnect(void)
@@ -62,7 +112,7 @@ static void cancel_reconnect(void)
   {
     esp_timer_stop(s_reconnect_timer);
   }
-  s_reconnect_backoff_s = 30;
+  s_reconnect_backoff_s = RECONNECT_BACKOFF_START_S;
 }
 
 // ============================================================
@@ -109,17 +159,69 @@ static void ts_poll_cb(void *arg)
 // Wi-Fi reset action (shared by emergency button + nav settings)
 // ============================================================
 
-static void do_reset_wifi(void)
+// Single entry point for bringing provisioning up, so the failure handling cannot drift between
+// the button path and the NO_CRED path — it already had, and NO_CRED was the one left stranded.
+static void start_provisioning_or_recover(void)
 {
-  wifi_manager_stop();
-  wifi_manager_clear_credential();
   const esp_err_t ret = ble_provisioning_start();
+  if (ret == ESP_OK)
+  {
+    return;
+  }
+
   if (ret == ESP_ERR_INVALID_STATE)
   {
-    ESP_LOGW(tag, "BLE memory released — rebooting into provisioning mode");
+    // Either the BLE controller memory was released for good, or the manager is already
+    // initialized. Both need a restart to get back to a provisionable state, and neither is
+    // specifically "memory released" — the old log here claimed that and misdiagnosed the rest.
+    ESP_LOGW(tag, "Provisioning unavailable (%s) — rebooting into provisioning mode", esp_err_to_name(ret));
     vTaskDelay(pdMS_TO_TICKS(200));
     esp_restart();
   }
+
+  // Anything else: stay alive and keep trying WiFi rather than sitting offline with no QR.
+  ESP_LOGE(tag, "ble_provisioning_start failed: %s — falling back to WiFi retry", esp_err_to_name(ret));
+  schedule_reconnect();
+}
+
+static void stop_wifi_for_provisioning(void)
+{
+  const esp_err_t ret = wifi_manager_stop();
+  if (ret != ESP_OK)
+  {
+    // Reachable: the DNS probe in VERIFYING is not bounded by STOP_TIMEOUT_MS. Proceed anyway —
+    // refusing would leave the user with no way out — but do not pretend the radio is idle.
+    ESP_LOGW(tag, "WiFi did not settle (%s) — provisioning may contend with the radio", esp_err_to_name(ret));
+  }
+}
+
+static void do_reset_wifi(void)
+{
+  stop_wifi_for_provisioning();
+  wifi_manager_clear_credential();
+  start_provisioning_or_recover();
+}
+
+// Non-destructive counterpart to do_reset_wifi(): brings up (or returns to) provisioning without
+// touching the stored credential, so backing out still leaves the device able to rejoin its AP.
+static void do_provisioning(void)
+{
+  if (!ble_provisioning_is_active())
+  {
+    ESP_LOGI(tag, "Starting provisioning (credential kept)");
+    stop_wifi_for_provisioning();
+    start_provisioning_or_recover();
+    return; // BLE_PROV_STARTED puts the QR up
+  }
+
+  char dev_name[32];
+  char prov_pass[9];
+  ble_provisioning_get_device_name(dev_name, sizeof(dev_name));
+  ble_provisioning_get_password(prov_pass, sizeof(prov_pass));
+
+  lvgl_port_lock(0);
+  prov_screen_show(dev_name, prov_pass);
+  lvgl_port_unlock();
 }
 
 static void do_sleep_now(void)
@@ -141,6 +243,7 @@ void app_handlers_register_nav_callbacks(void)
   nav_register_reset_wifi_cb(do_reset_wifi);
   nav_register_sleep_cb(do_sleep_now);
   nav_register_ntp_resync_cb(do_ntp_resync);
+  nav_register_provisioning_cb(do_provisioning);
 }
 
 // ============================================================
@@ -181,6 +284,24 @@ void on_button_press(const int btn_id, const bsp_btn_event_t event)
   else
   {
     action = (event == BSP_BTN_SHORT) ? NAV_ACTION_DOWN : NAV_ACTION_BACK;
+  }
+
+  // The QR overlay is a child of whatever screen is active, so any nav transition would delete it
+  // and nothing would ever put it back — provisioning would keep advertising behind a blank UI.
+  // Swallow nav actions while it is up, but let BACK dismiss it: a device that has never been
+  // provisioned stays in this state indefinitely, and it still has to be usable as a clock.
+  // Provisioning continues in the background; Settings → Network → Provisioning brings it back.
+  lvgl_port_lock(0);
+  const bool prov_visible = prov_screen_is_visible();
+  if (prov_visible && action == NAV_ACTION_BACK)
+  {
+    prov_screen_hide();
+  }
+  lvgl_port_unlock();
+
+  if (prov_visible)
+  {
+    return;
   }
 
   lvgl_port_lock(0);
@@ -271,6 +392,10 @@ void on_ble_prov_event(const ble_prov_event_t event, const char *ssid, const cha
   case BLE_PROV_FAILED:
     ESP_LOGW(tag, "BLE provisioning failed — bad credentials, waiting for retry");
     wifi_manager_clear_credential();
+    // The manager keeps advertising so the phone can retry over the same BLE link. Put the QR
+    // back up: without this the only feedback was a log line, and if the user had dismissed the
+    // overlay there was nothing on screen to say a retry was expected.
+    do_provisioning();
     break;
 
   default:
@@ -352,9 +477,18 @@ void on_wifi_event(const wifi_manager_event_t event)
         if (!s_ts_poll_timer)
         {
           const esp_timer_create_args_t ts_args = {.callback = ts_poll_cb, .name = "ts_poll"};
-          esp_timer_create(&ts_args, &s_ts_poll_timer);
+          const esp_err_t tret = esp_timer_create(&ts_args, &s_ts_poll_timer);
+          if (tret != ESP_OK)
+          {
+            ESP_LOGE(tag, "esp_timer_create(ts_poll) failed: %s — Tailscale icon will not update",
+                     esp_err_to_name(tret));
+            s_ts_poll_timer = NULL;
+          }
         }
-        esp_timer_start_periodic(s_ts_poll_timer, 10ULL * 1000000ULL);
+        if (s_ts_poll_timer)
+        {
+          esp_timer_start_periodic(s_ts_poll_timer, TS_POLL_PERIOD_US);
+        }
       }
       else
       {
@@ -377,11 +511,11 @@ void on_wifi_event(const wifi_manager_event_t event)
 
   case WIFI_MGR_NO_CRED:
     ESP_LOGW(tag, "No WiFi credential stored — starting BLE provisioning");
-    wifi_manager_stop();
+    stop_wifi_for_provisioning();
     lvgl_port_lock(0);
     status_bar_set_wifi_status(WIFI_STATUS_PROVISIONING);
     lvgl_port_unlock();
-    ble_provisioning_start();
+    start_provisioning_or_recover();
     break;
 
   case WIFI_MGR_DISCONNECTED:
