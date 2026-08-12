@@ -59,7 +59,7 @@ git log --oneline smartalock/master -- src/
 | **Fork used** | https://github.com/fudio101/microlink (branch `main`) |
 | **Author** | Cameron Malone |
 | **License** | MIT — `vendor/microlink/LICENSE` |
-| **Pinned at** | `8c3e762` (`v2.1.0-7-g8c3e762`) |
+| **Pinned at** | `289a3f9` (`v2.1.0-9-g289a3f9`) |
 
 **2026-08-12:** the fork's `esp-idf-6x-compat` branch (`main` + one ESP-IDF 6.x/mbedTLS 4.x/GCC 15
 compat commit) was fast-forward merged into `main` and never diverged again — `.gitmodules` now
@@ -67,7 +67,8 @@ tracks `main` directly instead of a side branch. Two more fixes landed on `main`
 Kconfig credentials comment no longer claims sdkconfig "should be git-ignored" (true for the fork's
 own examples, false for this project, which tracks sdkconfig and uses `scripts/check_secrets.py`
 instead), and `wireguard_lwip/README.md` gained the divergence warning + upstream-check procedure
-directly in the fork.
+directly in the fork. A third fix landed the same day: `ESP_IDF_6X_COMPAT.md` no longer documents
+`board_build.esp-idf.sdkconfig_extra`, which is not a real PlatformIO option.
 
 ---
 
