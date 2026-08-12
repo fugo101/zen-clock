@@ -264,6 +264,16 @@ call `microlink_factory_reset()` **before** `microlink_init()`.
 
 **Status bar icon visibility:**
 
-- NTP (`LV_SYMBOL_REFRESH`): visible only while syncing (orange); hidden at all other times — chain collapses
-  automatically
+- NTP (`LV_SYMBOL_REFRESH`): orange while syncing, **red when the sync failed**, hidden when idle or synced — the
+  chain collapses automatically. A failed sync must stay visible: the clock is showing the wrong time and nothing
+  else on screen says so.
+- WiFi (`LV_SYMBOL_WIFI`): dim disconnected · 70% scanning · orange connecting · light blue verifying · green online ·
+  **yellow associated-but-no-internet** · cyan provisioning
 - Tailscale (`LV_SYMBOL_SHUFFLE`): always visible, color reflects connection state
+
+**Connected but no internet:** `wifi_manager` still enters `WIFI_ST_CONNECTED` when the DNS probe fails — the
+association and IP lease are real, and a LAN-only network is usable — but it fires `WIFI_MGR_NO_INTERNET` immediately
+*after* `WIFI_MGR_CONNECTED` so the handler paints yellow over the green. The state clears when NTP next succeeds,
+which is proof the internet works. There is deliberately **no periodic DNS re-probe** in `WIFI_ST_CONNECTED`:
+`do_dns_probe()` contains an unbounded `getaddrinfo()`, and `wifi_manager_stop()` has to be able to interrupt that
+state within `STOP_TIMEOUT_MS`.

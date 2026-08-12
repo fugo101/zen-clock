@@ -657,14 +657,17 @@ static void wifi_task(void *arg) // NOLINT(readability-non-const-parameter)
 
       // Deliberately still CONNECTED when the probe failed: the association and the IP lease are
       // real, and demoting here would stop SNTP and MicroLink from ever starting on a LAN-only
-      // network. Surfacing "connected but unverified" in the UI is a separate change.
+      // network.
+      set_state(WIFI_ST_CONNECTED);
+      fire_event(WIFI_MGR_CONNECTED);
+
       if (!internet_ok)
       {
         ESP_LOGW(tag, "Entering CONNECTED without confirmed internet access");
+        // After CONNECTED, not before: the handler for that event paints the icon green, so this
+        // one has to arrive second to paint over it.
+        fire_event(WIFI_MGR_NO_INTERNET);
       }
-
-      set_state(WIFI_ST_CONNECTED);
-      fire_event(WIFI_MGR_CONNECTED);
       break;
     }
 
