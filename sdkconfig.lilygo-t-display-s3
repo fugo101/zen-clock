@@ -4322,7 +4322,7 @@ CONFIG_ML_JSON_BUFFER_SIZE_KB=128
 #
 
 #
-# These values are stored in sdkconfig (git-ignored).
+# These values are stored in this project's sdkconfig — keep it out of any public repository.
 #
 # default:
 CONFIG_ML_WIFI_SSID=""
