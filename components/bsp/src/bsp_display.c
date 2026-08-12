@@ -106,6 +106,12 @@ static void init_power(void)
   gpio_set_direction(PIN_LCD_PWR, GPIO_MODE_OUTPUT);
   gpio_set_level(PIN_LCD_PWR, PWR_ON_LEVEL);
 
+  // Release the latch bsp_display_power_off() applied before the last deep sleep. A held pad
+  // ignores the level set above, so skipping this leaves the panel dark after every wake and the
+  // board looks dead. Order matters: the driver docs require the pad to be driven to the wanted
+  // level *before* the hold is released (gpio.h:458). A no-op if nothing was ever held.
+  gpio_hold_dis(PIN_LCD_PWR);
+
   ESP_LOGI(tag, "Configuring LCD RD GPIO...");
   gpio_set_direction(PIN_LCD_RD, GPIO_MODE_INPUT);
   gpio_set_pull_mode(PIN_LCD_RD, GPIO_PULLUP_ONLY);
@@ -183,4 +189,24 @@ void bsp_display_set_brightness(uint8_t percent, uint32_t fade_time_ms)
 uint8_t bsp_display_get_brightness(void)
 {
   return bsp_backlight_get();
+}
+
+void bsp_display_power_off(void)
+{
+  // Deliberately no esp_lcd_panel_disp_on_off(false) here. It would mean keeping a static copy of
+  // the panel handle, and driving the i80 bus from the sleep task while the LVGL task may still be
+  // flushing is a contention risk for no benefit — the rail below goes away regardless.
+  gpio_set_level(PIN_LCD_PWR, !PWR_ON_LEVEL);
+
+  // Latch it: without a hold, the pad reverts to its default the moment the core powers down and
+  // the LDO comes back on for the whole sleep. GPIO15 is within the ESP32-S3 RTC range (0-21), so
+  // gpio_hold_en() survives deep sleep on its own — gpio_deep_sleep_hold_en() would additionally
+  // latch every other digital pad, including the two wake buttons, for no reason.
+  const esp_err_t ret = gpio_hold_en(PIN_LCD_PWR);
+  if (ret != ESP_OK)
+  {
+    // Not fatal: the display simply stays powered through sleep, which costs current but still
+    // wakes correctly. Worth a loud line because it silently undoes the point of this function.
+    ESP_LOGW(tag, "gpio_hold_en(LCD_PWR) failed: %s — panel rail stays on during sleep", esp_err_to_name(ret));
+  }
 }

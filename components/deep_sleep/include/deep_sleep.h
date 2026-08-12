@@ -29,12 +29,37 @@ extern "C"
   void deep_sleep_reset_timer(void);
 
   /**
+   * @brief Predicate asked before sleeping. Return true to decline this request.
+   *
+   * The countdown is re-armed when a request is declined, so the device asks again later rather
+   * than staying awake for good.
+   */
+  typedef bool (*deep_sleep_inhibit_cb_t)(void);
+
+  /**
+   * @brief Register the predicate consulted before each sleep. NULL (default) never inhibits.
+   *
+   * Exists so this component does not have to know about provisioning, WiFi or anything else
+   * that might want to hold sleep off — the application supplies the policy.
+   */
+  void deep_sleep_register_inhibit_cb(deep_sleep_inhibit_cb_t cb);
+
+  /**
    * @brief Trigger sleep sequence immediately.
    *
    * Notifies the sleep task to begin the fade-out and deep sleep entry.
-   * Safe to call from any task or timer callback.
+   * Safe to call from any task or timer callback. Clears any pending cancel.
    */
   void deep_sleep_trigger(void);
+
+  /**
+   * @brief Call off a sleep that is already fading out.
+   *
+   * Has no effect once esp_deep_sleep_start() has been reached, and none at all if no sleep is
+   * pending. Call it on every button event: without it, a device that hits its inactivity
+   * timeout sleeps even as the user is pressing buttons at it.
+   */
+  void deep_sleep_cancel(void);
 
   /**
    * @brief Update the inactivity timeout without reinitializing.

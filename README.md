@@ -153,8 +153,9 @@ s → … → 5 min max). NTP syncs immediately once connection is restored.
     - Short press: Navigate DOWN (or decrease value in edit mode)
     - Long press: BACK / Exit (go back or exit edit mode; **no-op on Clock face**)
     - Hold 3 seconds (EMERGENCY): Clear WiFi credentials → BLE provisioning
-- **BOOT + IO14 simultaneously (≥ 800ms):** Trigger deep sleep — backlight fades over 1.5s, device enters deep sleep (~
-  6µA). Press either button to wake.
+- **BOOT + IO14 simultaneously (≥ 800ms):** Trigger deep sleep — backlight fades over 1.5s, then the LCD rail is cut
+  and the device sleeps. Press any button during the fade to call it off; press either button while asleep to wake.
+  Sleep is declined while the provisioning QR is on screen. (Sleep current has not been measured on this board.)
 
 **Navigation Flow:**
 

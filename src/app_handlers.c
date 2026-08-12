@@ -119,6 +119,7 @@ static void cancel_reconnect(void)
 // Tailscale status poll — fires every 10s to update status bar icon
 // ============================================================
 
+// NOLINTNEXTLINE(readability-non-const-parameter)
 static void ts_poll_cb(void *arg)
 {
   (void) arg;
@@ -265,12 +266,26 @@ static void do_ntp_resync(void)
 // Nav callback registration
 // ============================================================
 
+// Sleeping means a full restart, which throws away the provisioning session the user is in the
+// middle of — and they are holding a phone up to the QR code, not pressing buttons, so nothing
+// resets the inactivity countdown.
+//
+// Keyed on the overlay being visible rather than on ble_provisioning_is_active(): a device that
+// has never been provisioned keeps advertising indefinitely by design, so the latter would block
+// auto-sleep forever and flatten the battery. Once the QR is dismissed the device is a clock
+// again and may sleep; waking re-runs boot, hits NO_CRED and brings provisioning straight back.
+static bool provisioning_in_progress(void)
+{
+  return prov_screen_is_visible();
+}
+
 void app_handlers_register_nav_callbacks(void)
 {
   nav_register_reset_wifi_cb(do_reset_wifi);
   nav_register_sleep_cb(do_sleep_now);
   nav_register_ntp_resync_cb(do_ntp_resync);
   nav_register_provisioning_cb(do_provisioning);
+  deep_sleep_register_inhibit_cb(provisioning_in_progress);
 }
 
 // ============================================================
@@ -281,6 +296,9 @@ void app_handlers_register_nav_callbacks(void)
 void on_button_press(const int btn_id, const bsp_btn_event_t event)
 {
   deep_sleep_reset_timer();
+  // Calls off a sleep already fading out. Resetting the timer alone does not help there: the
+  // request has left the timer behind and the sleep task is committed to it.
+  deep_sleep_cancel();
 
   // Emergency: IO14 held ≥ 3s → reset WiFi + BLE provisioning (bypasses nav)
   if (event == BSP_BTN_EMERGENCY && btn_id == BSP_BTN_IO14)
