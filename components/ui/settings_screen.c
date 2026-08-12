@@ -80,7 +80,7 @@ static const char *s_secs_options[] = {"On", "Off"};
 static setting_item_t s_items[SETTINGS_ITEM_COUNT] = {
     {.label = "- Display -", .type = STYPE_HEADER},
     {.label = "Theme", .type = STYPE_TOGGLE, .options = s_theme_options, .option_count = 2},
-    {.label = "Brightness", .type = STYPE_RANGE, .min = 0, .max = 100, .step = 10, .unit = "%"},
+    {.label = "Brightness", .type = STYPE_RANGE, .min = SETTINGS_BRIGHTNESS_MIN, .max = 100, .step = 10, .unit = "%"},
     {.label = "- Clock -", .type = STYPE_HEADER},
     {.label = "Time Format", .type = STYPE_TOGGLE, .options = s_format_options, .option_count = 2},
     {.label = "Show Secs", .type = STYPE_TOGGLE, .options = s_secs_options, .option_count = 2},
@@ -288,65 +288,147 @@ static void hide_edit_box(void)
 }
 
 // ============================================================
-// Apply value changes (auto-save + live preview)
+// Apply value changes — live preview now, NVS write coalesced
 // ============================================================
+// Each settings_set_*() is a complete nvs_open/set/commit/close cycle, i.e. a blocking flash
+// erase-write. Holding UP on Brightness for two seconds used to trigger about eleven of them,
+// all on the LVGL task. The live effect still fires on every single press — only the write is
+// deferred, so the screen stays as responsive as before while the flash sees one write instead.
+#define NVS_FLUSH_DELAY_MS 1000
+
+static lv_timer_t *s_flush_timer = NULL;
+static bool s_dirty[SETTINGS_ITEM_COUNT] = {false};
+
+// Everything the user must see immediately. Cheap: RAM, LEDC, or a tzset().
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-static void apply_change(const int index)
+static void apply_live(const int index)
 {
   const setting_item_t *item = &s_items[index];
 
   switch (index)
   {
   case 1: // Theme
-  {
-    const bool is_light = (item->value == 1);
-    settings_set_theme_light(is_light);
-    ui_set_theme(is_light);
-    ESP_LOGI(tag, "Theme -> %s", is_light ? "Light" : "Dark");
+    ui_set_theme(item->value == 1);
+    break;
+  case 2: // Brightness
+    bsp_display_set_brightness((uint8_t) item->value, 0);
+    break;
+  case 6: // Timezone
+    settings_apply_timezone((int8_t) item->value);
+    break;
+  case 8:  // Sleep H
+  case 9:  // Sleep M
+  case 10: // Sleep S
+    deep_sleep_update_timeout(compute_sleep_s());
+    break;
+  default:
+    // Time Format and Show Seconds have no live effect — the clock face reads them when
+    // nav re-creates the clock screen, which is exactly what it did before this change.
     break;
   }
+}
+
+// The flash side. Only ever called from flush_pending().
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+static void persist_item(const int index)
+{
+  const setting_item_t *item = &s_items[index];
+
+  switch (index)
+  {
+  case 1: // Theme
+    settings_set_theme_light(item->value == 1);
+    ESP_LOGI(tag, "Theme -> %s", item->value == 1 ? "Light" : "Dark");
+    break;
   case 2: // Brightness
     settings_set_brightness((uint8_t) item->value);
-    bsp_display_set_brightness((uint8_t) item->value, 0);
     ESP_LOGI(tag, "Brightness -> %d%%", item->value);
     break;
   case 4: // Time Format
-  {
-    const bool is_24h = (item->value == 0);
-    settings_set_time_format_24h(is_24h);
-    ESP_LOGI(tag, "Time Format -> %s", is_24h ? "24H" : "12H");
+    settings_set_time_format_24h(item->value == 0);
+    ESP_LOGI(tag, "Time Format -> %s", item->value == 0 ? "24H" : "12H");
     break;
-  }
   case 5: // Show Seconds
-  {
-    const bool show = (item->value == 0);
-    settings_set_show_seconds(show);
-    ESP_LOGI(tag, "Show Seconds -> %s", show ? "On" : "Off");
+    settings_set_show_seconds(item->value == 0);
+    ESP_LOGI(tag, "Show Seconds -> %s", item->value == 0 ? "On" : "Off");
     break;
-  }
   case 6: // Timezone
     settings_set_timezone_offset((int8_t) item->value);
-    settings_apply_timezone((int8_t) item->value);
     ESP_LOGI(tag, "Timezone -> UTC%+d", item->value);
     break;
   case 8: // Sleep H
     settings_set_sleep_h((uint8_t) item->value);
-    deep_sleep_update_timeout(compute_sleep_s());
     ESP_LOGI(tag, "Sleep H -> %d", item->value);
     break;
   case 9: // Sleep M
     settings_set_sleep_m((uint8_t) item->value);
-    deep_sleep_update_timeout(compute_sleep_s());
     ESP_LOGI(tag, "Sleep M -> %d", item->value);
     break;
   case 10: // Sleep S
     settings_set_sleep_s((uint8_t) item->value);
-    deep_sleep_update_timeout(compute_sleep_s());
     ESP_LOGI(tag, "Sleep S -> %d", item->value);
     break;
   default:
     break;
   }
+}
+
+static void cancel_flush_timer(void)
+{
+  if (s_flush_timer)
+  {
+    lv_timer_delete(s_flush_timer);
+    s_flush_timer = NULL;
+  }
+}
+
+static void flush_pending(void)
+{
+  cancel_flush_timer();
+
+  for (int i = 0; i < SETTINGS_ITEM_COUNT; i++)
+  {
+    if (s_dirty[i])
+    {
+      s_dirty[i] = false;
+      persist_item(i);
+    }
+  }
+}
+
+static void flush_timer_cb(lv_timer_t *timer) // NOLINT(readability-non-const-parameter)
+{
+  (void) timer;
+  // One-shot: LVGL deletes this timer itself once the repeat count runs out (lv_timer.c:369).
+  // Drop our handle first so flush_pending() does not delete it a second time.
+  s_flush_timer = NULL;
+  flush_pending();
+}
+
+static void schedule_flush(void)
+{
+  if (s_flush_timer)
+  {
+    lv_timer_reset(s_flush_timer);
+    return;
+  }
+
+  s_flush_timer = lv_timer_create(flush_timer_cb, NVS_FLUSH_DELAY_MS, NULL);
+  if (!s_flush_timer)
+  {
+    // Out of memory for a timer: write straight through rather than silently losing the setting.
+    ESP_LOGW(tag, "No flush timer available — writing settings immediately");
+    flush_pending();
+    return;
+  }
+  lv_timer_set_repeat_count(s_flush_timer, 1);
+}
+
+static void apply_change(const int index)
+{
+  apply_live(index);
+  s_dirty[index] = true;
+  schedule_flush();
 }
 
 // ============================================================
@@ -358,6 +440,10 @@ void settings_screen_create(lv_obj_t *parent)
   s_scroll = 0;
   s_editing = false;
   s_edit_box = NULL;
+
+  // Land any deferred write before reading back, otherwise re-entering the screen quickly
+  // would load the value the user just replaced. Normally a no-op: exit_edit() already flushed.
+  flush_pending();
 
   // Load current values from NVS
   s_items[1].value = settings_get_theme_light() ? 1 : 0;
@@ -531,6 +617,11 @@ void settings_screen_exit_edit(void)
   {
     lv_obj_remove_local_style_prop(s_value_labels[s_focus], LV_STYLE_TEXT_COLOR, 0);
   }
+
+  // Leaving edit mode is the point at which the user is done adjusting, so don't make them
+  // wait out the debounce. This is also the only exit from SCR_SETTINGS_EDIT (nav.c), which
+  // makes it the reliable place to guarantee the value reaches flash.
+  flush_pending();
 
   ESP_LOGI(tag, "Edit done");
 }

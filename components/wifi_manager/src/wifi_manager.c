@@ -40,7 +40,6 @@ static SemaphoreHandle_t s_mutex = NULL;
 static TaskHandle_t s_task_handle = NULL;
 static wifi_event_cb_t s_callback = NULL;
 static wifi_state_t s_state = WIFI_ST_IDLE;
-static esp_netif_t *s_sta_netif = NULL;
 
 static char s_ssid[SSID_MAX_LEN] = {0};
 static char s_pass[PASS_MAX_LEN] = {0};
@@ -711,16 +710,44 @@ esp_err_t wifi_manager_init(void)
 
   // Network interface
   ESP_ERROR_CHECK(esp_netif_init());
-  ESP_ERROR_CHECK(esp_event_loop_create_default());
-  s_sta_netif = esp_netif_create_default_wifi_sta();
+
+  // Tolerate ESP_ERR_INVALID_STATE: the default loop is process-wide, and whoever creates it
+  // first wins. Aborting because someone else got there is a boot loop over nothing.
+  const esp_err_t loop_ret = esp_event_loop_create_default();
+  if (loop_ret != ESP_OK && loop_ret != ESP_ERR_INVALID_STATE)
+  {
+    ESP_LOGE(tag, "esp_event_loop_create_default failed: %s", esp_err_to_name(loop_ret));
+    return loop_ret;
+  }
+
+  // Return deliberately discarded: nothing here ever needs the handle back, and there is no
+  // deinit path to hand it to. If one is ever added, esp_netif_get_handle_from_ifkey("WIFI_STA_DEF")
+  // retrieves it — no need to carry a file-scope pointer that nothing reads.
+  (void) esp_netif_create_default_wifi_sta();
 
   // Wi-Fi driver
   const wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-  // Synchronization primitives
+  // Synchronization primitives. Both are dereferenced unguarded throughout this file, so a
+  // silent NULL here would surface much later as a FreeRTOS assert inside an unrelated call.
   s_event_group = xEventGroupCreate();
   s_mutex = xSemaphoreCreateMutex();
+  if (!s_event_group || !s_mutex)
+  {
+    ESP_LOGE(tag, "Failed to allocate WiFi synchronization primitives");
+    if (s_event_group)
+    {
+      vEventGroupDelete(s_event_group);
+      s_event_group = NULL;
+    }
+    if (s_mutex)
+    {
+      vSemaphoreDelete(s_mutex);
+      s_mutex = NULL;
+    }
+    return ESP_ERR_NO_MEM;
+  }
 
   // Event handlers — bits only
   ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));

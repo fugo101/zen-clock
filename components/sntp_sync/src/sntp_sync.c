@@ -219,12 +219,27 @@ esp_err_t sntp_sync_start(const sntp_sync_cb_t on_sync)
   ESP_LOGW(tag, "Only 1 NTP server slot! Set CONFIG_LWIP_SNTP_MAX_SERVERS=3 in menuconfig");
 #endif
 
+  // Created before the task, because the task body waits on it. Bailing out here leaves
+  // s_sntp_task NULL, which sntp_sync_notify_connected() already checks.
   s_eg = xEventGroupCreate();
+  if (!s_eg)
+  {
+    ESP_LOGE(tag, "Failed to create SNTP event group — time sync disabled");
+    return ESP_ERR_NO_MEM;
+  }
 
   // Spawn persistent SNTP task (initial sync + periodic re-sync)
   BaseType_t xret = xTaskCreate(sntp_task, "sntp_sync", 3072, NULL, 2, &s_sntp_task);
+  if (xret != pdPASS)
+  {
+    ESP_LOGE(tag, "Failed to create SNTP task — time sync disabled");
+    vEventGroupDelete(s_eg);
+    s_eg = NULL;
+    s_sntp_task = NULL;
+    return ESP_FAIL;
+  }
 
-  return (xret == pdPASS) ? ESP_OK : ESP_FAIL;
+  return ESP_OK;
 }
 
 void sntp_sync_notify_connected(void)

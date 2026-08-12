@@ -43,19 +43,38 @@ void bsp_battery_setup(void)
 {
   ESP_LOGI(tag, "Configuring battery monitor...");
 
+  // None of this is ESP_ERROR_CHECK'd. The battery reading is cosmetic — a percentage in the
+  // status bar — and aborting here bricks boot for it. The curve-fitting scheme in particular
+  // returns ESP_ERR_NOT_SUPPORTED on a chip whose eFuse holds no calibration data, which is a
+  // property of that individual part, not a bug. On any failure the handles stay NULL and
+  // bsp_battery_get_voltage() reports -1, which the UI already renders as "N/A".
+
   // ADC unit
   // NOLINTNEXTLINE(*-invalid-enum-default-initialization)
   const adc_oneshot_unit_init_cfg_t adc_cfg = {
       .unit_id = BAT_ADC_UNIT,
   };
-  ESP_ERROR_CHECK(adc_oneshot_new_unit(&adc_cfg, &s_adc_handle));
+  esp_err_t err = adc_oneshot_new_unit(&adc_cfg, &s_adc_handle);
+  if (err != ESP_OK)
+  {
+    ESP_LOGE(tag, "adc_oneshot_new_unit failed (%s) — battery level unavailable", esp_err_to_name(err));
+    s_adc_handle = NULL;
+    return;
+  }
 
   // ADC channel
   const adc_oneshot_chan_cfg_t chan_cfg = {
       .bitwidth = ADC_BITWIDTH_DEFAULT,
       .atten = ADC_ATTEN_DB_12,
   };
-  ESP_ERROR_CHECK(adc_oneshot_config_channel(s_adc_handle, BAT_ADC_CHANNEL, &chan_cfg));
+  err = adc_oneshot_config_channel(s_adc_handle, BAT_ADC_CHANNEL, &chan_cfg);
+  if (err != ESP_OK)
+  {
+    ESP_LOGE(tag, "adc_oneshot_config_channel failed (%s) — battery level unavailable", esp_err_to_name(err));
+    adc_oneshot_del_unit(s_adc_handle);
+    s_adc_handle = NULL;
+    return;
+  }
 
   // Calibration
   const adc_cali_curve_fitting_config_t cali_cfg = {
@@ -63,7 +82,15 @@ void bsp_battery_setup(void)
       .atten = ADC_ATTEN_DB_12,
       .bitwidth = ADC_BITWIDTH_DEFAULT,
   };
-  ESP_ERROR_CHECK(adc_cali_create_scheme_curve_fitting(&cali_cfg, &s_adc_cali_handle));
+  err = adc_cali_create_scheme_curve_fitting(&cali_cfg, &s_adc_cali_handle);
+  if (err != ESP_OK)
+  {
+    // Left NULL on purpose: adc_cali_raw_to_voltage() rejects a NULL handle with
+    // ESP_ERR_INVALID_ARG, so readings degrade to -1 instead of reporting a wrong voltage.
+    ESP_LOGE(tag, "ADC calibration unavailable (%s) — battery level will read N/A", esp_err_to_name(err));
+    s_adc_cali_handle = NULL;
+    return;
+  }
 
   ESP_LOGI(tag, "Battery monitor ready (GPIO%d, ADC1_CH%d)", PIN_BAT_ADC, BAT_ADC_CHANNEL);
 }

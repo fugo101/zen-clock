@@ -3,6 +3,7 @@
 #include "bsp.h"
 #include "board_config.h"
 #include "driver/rtc_io.h"
+#include "esp_err.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -44,7 +45,15 @@ static void inactivity_cb(void *arg) // NOLINT(readability-non-const-parameter)
 
 void deep_sleep_init(uint32_t timeout_s)
 {
-  xTaskCreate(sleep_task_fn, "deep_sleep", 2048, NULL, 4, &s_task);
+  // Both creations are checked: on failure the handle stays NULL, every other entry point in
+  // this file already guards on it, and the device simply never sleeps — which is a far better
+  // outcome for a mains-or-battery clock than a crash inside FreeRTOS or esp_timer.
+  if (xTaskCreate(sleep_task_fn, "deep_sleep", 2048, NULL, 4, &s_task) != pdPASS)
+  {
+    ESP_LOGE(tag, "Failed to create sleep task — deep sleep disabled");
+    s_task = NULL;
+    return;
+  }
 
   const esp_timer_create_args_t args = {
       .callback = inactivity_cb,
@@ -52,7 +61,16 @@ void deep_sleep_init(uint32_t timeout_s)
       .arg = NULL,
       .dispatch_method = ESP_TIMER_TASK,
   };
-  esp_timer_create(&args, &s_timer);
+  const esp_err_t ret = esp_timer_create(&args, &s_timer);
+  if (ret != ESP_OK)
+  {
+    // Manual sleep (both buttons, or Settings → Sleep Now) still works; only the inactivity
+    // timer is lost, so say exactly that rather than claiming deep sleep is gone.
+    ESP_LOGE(tag, "esp_timer_create(sleep_tmr) failed: %s — auto-sleep disabled, manual sleep still works",
+             esp_err_to_name(ret));
+    s_timer = NULL;
+    return;
+  }
 
   s_timeout_us = (uint64_t) timeout_s * 1000000ULL;
   if (timeout_s > 0)
