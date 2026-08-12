@@ -46,6 +46,16 @@ static bool s_active = false;
 static bool s_initialized = false;
 static bool s_mem_freed = false;
 
+// Latched by NETWORK_PROV_WIFI_CRED_SUCCESS, read by NETWORK_PROV_END, cleared on every start.
+// Tells a completed provisioning apart from a cancelled one — see the END case below.
+static bool s_cred_ok = false;
+
+// Set while a deliberate stop is winding down. The manager can emit WIFI_CRED_FAIL as it tears a
+// session down, and the app answers BLE_PROV_FAILED by erasing the stored WiFi credential and
+// re-showing the QR — so an unguarded cancel wiped the user's WiFi password. Same idea as
+// wifi_manager's stop_requested(): a failure raised by our own stop is not a real failure.
+static bool s_stopping = false;
+
 // SRP6a credentials — heap-alloc'd in ble_provisioning_start(), freed on PROV_END
 static char s_sec2_password[9]; // 8 hex chars from MAC + NUL
 static char *s_sec2_salt = NULL;
@@ -125,11 +135,22 @@ static void prov_event_handler(void *arg, // NOLINT(readability-non-const-parame
 
   case NETWORK_PROV_WIFI_CRED_SUCCESS:
     ESP_LOGI(tag, "Credential verification succeeded");
+    // Latched because NETWORK_PROV_END carries no outcome of its own — it only says the service
+    // stopped. This flag is the sole thing separating "the phone provisioned us" from "the user
+    // backed out", and only the former may release the BT controller memory.
+    s_cred_ok = true;
     break;
 
   case NETWORK_PROV_WIFI_CRED_FAIL:
   {
     const auto reason = (network_prov_wifi_sta_fail_reason_t *) data;
+    if (s_stopping)
+    {
+      // Raised while we are tearing the session down on purpose. Forwarding it would have the
+      // app erase a perfectly good stored credential and put the QR back up.
+      ESP_LOGI(tag, "Ignoring credential failure during deliberate stop (reason=%d)", reason ? (int) *reason : -1);
+      break;
+    }
     ESP_LOGW(tag, "Credential verification failed (reason=%d)", reason ? (int) *reason : -1);
     if (s_callback)
     {
@@ -162,8 +183,13 @@ static void prov_event_handler(void *arg, // NOLINT(readability-non-const-parame
 
     if (s_callback)
     {
-      s_callback(BLE_PROV_SUCCESS, NULL, NULL);
+      // END fires for a cancel exactly as it does for a success. Reporting both as SUCCESS sent
+      // the app down a path that calls ble_provisioning_release_memory(), freeing ~110 KB of BT
+      // RAM for good — a cancelled session would have left the device unprovisionable.
+      s_callback(s_cred_ok ? BLE_PROV_SUCCESS : BLE_PROV_STOPPED, NULL, NULL);
     }
+    s_cred_ok = false;
+    s_stopping = false;
     break;
 
   default:
@@ -196,6 +222,11 @@ esp_err_t ble_provisioning_start(void)
     ESP_LOGE(tag, "BLE memory already released — cannot start provisioning again");
     return ESP_ERR_INVALID_STATE;
   }
+
+  // Cleared per attempt: a previous session's success must not make this one's END look like a
+  // success too, and a previous cancel must not silence this session's genuine failures.
+  s_cred_ok = false;
+  s_stopping = false;
 
   char device_name[32];
   build_device_name(device_name, sizeof(device_name));
@@ -264,24 +295,34 @@ esp_err_t ble_provisioning_stop(void) // NOLINT
 
   if (s_active)
   {
+    // Request only — do NOT tear down here. network_prov_mgr_stop_provisioning() "will initiate
+    // a process to stop the service and return" (manager.h:429-434); NETWORK_PROV_END arrives
+    // later, after a cleanup delay that defaults to 1000 ms. Calling deinit() and
+    // free_sec2_credentials() straight after handed protocomm's shallow copy of the SRP
+    // salt/verifier back to the allocator while the service was still winding down — the device
+    // panicked about a second afterwards. The END handler owns the whole teardown.
+    ESP_LOGI(tag, "Stopping BLE provisioning (teardown completes on PROV_END)");
+    s_stopping = true;
     network_prov_mgr_stop_provisioning();
-    s_active = false;
+    return ESP_OK;
   }
 
-  if (s_initialized)
-  {
-    network_prov_mgr_deinit();
-    s_initialized = false;
-  }
-
+  // Initialized but never advertised — a start() that failed partway. deinit() stops the service
+  // and emits NETWORK_PROV_END itself (manager.h:436-438), so clear the flag first and let the
+  // handler skip its own deinit.
+  s_initialized = false;
+  network_prov_mgr_deinit();
   free_sec2_credentials();
-  ESP_LOGI(tag, "BLE provisioning stopped");
+  ESP_LOGI(tag, "BLE provisioning deinitialized");
   return ESP_OK;
 }
 
 bool ble_provisioning_is_active(void)
 {
-  return s_active;
+  // A stop that has been requested but not yet confirmed by NETWORK_PROV_END is already "not
+  // active" as far as callers are concerned. Reporting it as active let do_provisioning() take
+  // the "just re-show the QR" branch against a manager that was busy tearing itself down.
+  return s_active && !s_stopping;
 }
 
 void ble_provisioning_get_device_name(char *buf, size_t len)

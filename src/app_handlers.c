@@ -224,6 +224,33 @@ static void do_provisioning(void)
   lvgl_port_unlock();
 }
 
+// Dismissing the QR overlay on a device that already has a credential means "never mind" — and
+// getting here cost the user their connection, because do_provisioning() stopped WiFi to hand the
+// radio to network_prov_mgr. Nothing else brings it back: wifi_manager_stop() deliberately
+// suppresses its failure events, so on_wifi_event never fires and schedule_reconnect() never runs.
+// Without this the device sat in IDLE with no IP and no Tailscale until it was rebooted.
+static void dismiss_provisioning(void)
+{
+  if (!wifi_manager_has_credential())
+  {
+    // Never provisioned: there is no connection to restore, and wifi_manager_start() would only
+    // fire NO_CRED straight back. Leave BLE advertising so the phone can still finish the job —
+    // the clock stays usable in the meantime, which is the whole point of a dismissible overlay.
+    ESP_LOGI(tag, "QR dismissed with no stored credential — provisioning stays available");
+    return;
+  }
+
+  // Only requests the stop; the radio is not free yet. WiFi is restarted from the
+  // BLE_PROV_STOPPED handler, which runs once NETWORK_PROV_END confirms the service is down —
+  // same shape as the BLE_PROV_SUCCESS path. Starting it here would race the teardown.
+  ESP_LOGI(tag, "Provisioning dismissed — stopping BLE, WiFi resumes on PROV_END");
+  const esp_err_t ret = ble_provisioning_stop();
+  if (ret != ESP_OK)
+  {
+    ESP_LOGW(tag, "ble_provisioning_stop failed: %s", esp_err_to_name(ret));
+  }
+}
+
 static void do_sleep_now(void)
 {
   deep_sleep_trigger();
@@ -293,7 +320,8 @@ void on_button_press(const int btn_id, const bsp_btn_event_t event)
   // Provisioning continues in the background; Settings → Network → Provisioning brings it back.
   lvgl_port_lock(0);
   const bool prov_visible = prov_screen_is_visible();
-  if (prov_visible && action == NAV_ACTION_BACK)
+  const bool dismissed = (prov_visible && action == NAV_ACTION_BACK);
+  if (dismissed)
   {
     prov_screen_hide();
   }
@@ -301,6 +329,13 @@ void on_button_press(const int btn_id, const bsp_btn_event_t event)
 
   if (prov_visible)
   {
+    // Outside the lock: ble_provisioning_stop() tears down the manager and wifi_manager_start()
+    // wakes the WiFi task — both block long enough to freeze the display and stall the event
+    // loop, which is exactly what Phase 2 moved the nav action callbacks off the lock to avoid.
+    if (dismissed)
+    {
+      dismiss_provisioning();
+    }
     return;
   }
 
@@ -380,14 +415,41 @@ void on_ble_prov_event(const ble_prov_event_t event, const char *ssid, const cha
     break;
 
   case BLE_PROV_SUCCESS:
+  {
     ESP_LOGI(tag, "BLE provisioning complete — starting WiFi");
     lvgl_port_lock(0);
     prov_screen_hide();
     lvgl_port_unlock();
     ble_provisioning_stop();
+    // Only reached on a genuine completion — this frees ~110 KB of BT RAM for good.
     ble_provisioning_release_memory();
-    wifi_manager_start();
+    const esp_err_t ret = wifi_manager_start();
+    if (ret != ESP_OK)
+    {
+      ESP_LOGW(tag, "wifi_manager_start after provisioning: %s", esp_err_to_name(ret));
+    }
     break;
+  }
+
+  case BLE_PROV_STOPPED:
+  {
+    // Cancelled, not completed. Deliberately no ble_provisioning_release_memory() here — that
+    // frees the BT controller for good, and the user has to be able to come back via
+    // Settings → Network → Provisioning.
+    ESP_LOGI(tag, "BLE provisioning stopped (cancelled) — resuming WiFi");
+    lvgl_port_lock(0);
+    prov_screen_hide();
+    lvgl_port_unlock();
+    // Safe now, and only now: the manager has released the radio. do_provisioning() stopped
+    // WiFi on the way in, and nothing else would ever start it again — wifi_manager_stop()
+    // suppresses its own failure events, so no reconnect is ever scheduled.
+    const esp_err_t ret = wifi_manager_start();
+    if (ret != ESP_OK)
+    {
+      ESP_LOGW(tag, "wifi_manager_start after cancel: %s", esp_err_to_name(ret));
+    }
+    break;
+  }
 
   case BLE_PROV_FAILED:
     ESP_LOGW(tag, "BLE provisioning failed — bad credentials, waiting for retry");
@@ -406,6 +468,17 @@ void on_ble_prov_event(const ble_prov_event_t event, const char *ssid, const cha
 // ============================================================
 // WiFi event callback
 // ============================================================
+
+// MicroLink runs if a key was configured at build time, or if a previous session left credentials
+// in NVS. Written as one predicate rather than inline: CONFIG_ML_TAILSCALE_AUTH_KEY is empty in
+// the checked-in sdkconfig, so an inline `KEY[0] == '\0' && ...` folds to a constant and reads as
+// a redundant operand — yet it is the decisive one in any build that sets a key via menuconfig,
+// where it must short-circuit so MicroLink starts.
+static bool microlink_configured(void)
+{
+  const char *const auth_key = CONFIG_ML_TAILSCALE_AUTH_KEY;
+  return auth_key[0] != '\0' || microlink_has_stored_credentials();
+}
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void on_wifi_event(const wifi_manager_event_t event)
@@ -447,7 +520,7 @@ void on_wifi_event(const wifi_manager_event_t event)
       ESP_LOGI(tag, "WiFi reconnected — notifying SNTP");
       sntp_sync_notify_connected();
     }
-    if (CONFIG_ML_TAILSCALE_AUTH_KEY[0] == '\0' && !microlink_has_stored_credentials())
+    if (!microlink_configured())
     {
       ESP_LOGI(tag, "No Tailscale auth key and no stored session — skipping MicroLink");
     }
