@@ -2,8 +2,8 @@ BasedOnStyle: LLVM
 IndentWidth: 2
 BreakBeforeBraces: Allman
 ColumnLimit: 120
-SortIncludes: false
-AllowShortIfStatementsOnASingleLine: false
+SortIncludes: Never
+AllowShortIfStatementsOnASingleLine: Never
 AllowShortLoopsOnASingleLine: false
 AllowShortFunctionsOnASingleLine: None
 IndentCaseLabels: false
@@ -11,4 +11,4 @@ PointerAlignment: Right
 AlignConsecutiveMacros: Consecutive
 AlignTrailingComments: true
 SpaceAfterCStyleCast: true
-BinPackParameters: false
+BinPackParameters: OnePerLine

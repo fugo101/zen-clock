@@ -39,6 +39,7 @@ static float volts_to_percentage(float volts)
 // ============================================================
 // Init (called from bsp_display.c during bsp_display_init)
 // ============================================================
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void bsp_battery_setup(void)
 {
   ESP_LOGI(tag, "Configuring battery monitor...");

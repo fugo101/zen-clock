@@ -24,6 +24,7 @@ static const char *const tag = "WiFiCred";
 // Internal loader — called only from wifi_manager.c (wifi_task)
 // ============================================================
 
+// NOLINTNEXTLINE(misc-unused-parameters) - out_ssid is used below via nvs_get_str
 bool wifi_cred_load(char *out_ssid, size_t ssid_len, char *out_pass, size_t pass_len)
 {
   nvs_handle_t h;

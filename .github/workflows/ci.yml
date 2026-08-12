@@ -9,10 +9,19 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: [ self-hosted, Linux, X64 ]
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.fork == false
+    timeout-minutes: 20
+    # No `if: ... fork == false` guard here: the repo already requires manual approval to run
+    # workflows from a first-time contributor's fork PR (Settings > Actions > fork PR approval
+    # policy), which is what actually protects the self-hosted runner. Skipping the job on top
+    # of that made GitHub count "skipped" as "passed" for this required check, letting an
+    # approved-but-unbuilt fork PR merge anyway.
     steps:
       - uses: actions/checkout@v7
         with:
@@ -35,8 +44,17 @@ jobs:
             exit 1
           fi
 
+      - name: Check for leaked credentials
+        run: python3 scripts/check_secrets.py
+
+      - name: Check formatting
+        run: python3 scripts/format.py --check
+
       - name: Build firmware
         run: pio run -e lilygo-t-display-s3
+
+      - name: Static analysis (pio check)
+        run: python3 scripts/pio_check.py
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
