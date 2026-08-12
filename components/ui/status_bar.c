@@ -18,6 +18,10 @@ static lv_obj_t *s_wifi_icon = NULL;
 static lv_obj_t *s_sntp_icon = NULL;
 static lv_obj_t *s_ts_icon = NULL;
 static lv_timer_t *s_bat_timer = NULL;
+static lv_timer_t *s_bat_blink_timer = NULL;
+static status_bar_battery_cb_t s_battery_cb = NULL;
+
+#define BATT_BLINK_PERIOD_MS 500
 
 // Persist status across screen switches so icons restore correctly on recreate
 static wifi_status_t s_last_wifi_status = WIFI_STATUS_DISCONNECTED;
@@ -58,6 +62,36 @@ static void realign_chain(void)
 }
 
 // ============================================================
+// Battery blink — separate fast timer, only alive while critical
+// ============================================================
+static void battery_blink_cb(lv_timer_t *timer) // NOLINT(readability-non-const-parameter)
+{
+  (void) timer;
+  if (lv_obj_has_flag(s_bat_icon, LV_OBJ_FLAG_HIDDEN))
+  {
+    lv_obj_remove_flag(s_bat_icon, LV_OBJ_FLAG_HIDDEN);
+  }
+  else
+  {
+    lv_obj_add_flag(s_bat_icon, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+static void set_battery_blink(bool enabled)
+{
+  if (enabled && !s_bat_blink_timer)
+  {
+    s_bat_blink_timer = lv_timer_create(battery_blink_cb, BATT_BLINK_PERIOD_MS, NULL);
+  }
+  else if (!enabled && s_bat_blink_timer)
+  {
+    lv_timer_delete(s_bat_blink_timer);
+    s_bat_blink_timer = NULL;
+    lv_obj_remove_flag(s_bat_icon, LV_OBJ_FLAG_HIDDEN); // don't leave it stuck invisible
+  }
+}
+
+// ============================================================
 // Battery timer callback — runs inside lv_timer_handler()
 // ============================================================
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
@@ -68,6 +102,10 @@ static void battery_timer_cb(lv_timer_t *timer) // NOLINT(readability-non-const-
 
   const int pct = bsp_battery_get_percentage();
   const bool usb = bsp_battery_usb_connected();
+  // Low-battery state never applies on USB power — it is about running out, not about charge
+  // level while plugged in.
+  const bool low = pct >= 0 && !usb && pct < BATT_LOW_PCT;
+  const bool critical = pct >= 0 && !usb && pct < BATT_CRIT_PCT;
 
   if (pct >= 0)
   {
@@ -101,6 +139,16 @@ static void battery_timer_cb(lv_timer_t *timer) // NOLINT(readability-non-const-
       lv_label_set_text(s_bat_icon, LV_SYMBOL_BATTERY_EMPTY);
     }
 
+    if (low)
+    {
+      lv_obj_set_style_text_color(s_bat_icon, lv_palette_main(LV_PALETTE_RED), 0);
+    }
+    else
+    {
+      lv_obj_remove_local_style_prop(s_bat_icon, LV_STYLE_TEXT_COLOR, 0);
+    }
+    set_battery_blink(critical);
+
     ESP_LOGI(tag, "Battery: %d%% (%s)", pct, usb ? "USB" : "BATT");
   }
   else
@@ -108,6 +156,13 @@ static void battery_timer_cb(lv_timer_t *timer) // NOLINT(readability-non-const-
     // No battery connected or ADC error
     lv_label_set_text(s_bat_pct, "N/A");
     lv_label_set_text(s_bat_icon, LV_SYMBOL_BATTERY_EMPTY);
+    lv_obj_remove_local_style_prop(s_bat_icon, LV_STYLE_TEXT_COLOR, 0);
+    set_battery_blink(false);
+  }
+
+  if (s_battery_cb)
+  {
+    s_battery_cb(pct, usb);
   }
 
   // Re-align entire chain (text width may have changed)
@@ -165,6 +220,11 @@ void status_bar_create(lv_obj_t *parent)
   status_bar_set_wifi_status(s_last_wifi_status);
   status_bar_set_sntp_status(s_last_sntp_status);
   status_bar_set_ts_status(s_last_ts_status);
+}
+
+void status_bar_register_battery_cb(status_bar_battery_cb_t cb)
+{
+  s_battery_cb = cb;
 }
 
 void status_bar_set_wifi_status(wifi_status_t status)
@@ -313,6 +373,11 @@ void status_bar_destroy(void)
   {
     lv_timer_delete(s_bat_timer);
     s_bat_timer = NULL;
+  }
+  if (s_bat_blink_timer)
+  {
+    lv_timer_delete(s_bat_blink_timer);
+    s_bat_blink_timer = NULL;
   }
   s_bat_icon = NULL;
   s_bat_pct = NULL;
