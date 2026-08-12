@@ -29,12 +29,18 @@ Severity: 🔴 critical · 🟠 high · 🟡 medium · ⚪ low
 copy**, as are both 2022 replay-detection fixes. Nothing to port. Details and the re-check procedure are in
 `THIRD_PARTY.md`.
 
-**Upstream items (belong in the `fudio101/microlink` fork, not this repo):**
+**Upstream items (belonged in the `fudio101/microlink` fork, not this repo) ✅ done — `main` bumped in PR #23:**
 
-- [ ] `components/microlink/Kconfig:256` — drop the false `comment "These values are stored in sdkconfig
+- [x] `components/microlink/Kconfig:256` — dropped the false `comment "These values are stored in sdkconfig
   (git-ignored)."`; it is what put the leak instruction in front of users in the first place.
-- [ ] Add a `smartalock` git remote so `wireguard_lwip` upstream can be diffed without hunting for the URL (procedure in
-  `THIRD_PARTY.md`).
+  `fudio101/microlink#2`. Confirmed reaching this repo: `sdkconfig.lilygo-t-display-s3`'s comment
+  was regenerated with the corrected text by confgen on the next build after the pin bump.
+- [x] `wireguard_lwip` upstream-check procedure (git remote + log command) now documented directly in
+  `vendor/microlink/components/wireguard_lwip/README.md`, not only in this repo's `THIRD_PARTY.md`.
+  `fudio101/microlink#2`.
+- [x] Bonus: `esp-idf-6x-compat` was `main` + one commit, never merged back — fast-forward merged
+  (`fudio101/microlink#1`). `.gitmodules` now tracks `main` directly; the side branch is gone from
+  the dependency graph. Branch protection enabled on `fudio101/microlink`'s `main`.
 
 ---
 
