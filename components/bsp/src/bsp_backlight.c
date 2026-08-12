@@ -33,7 +33,14 @@ void bsp_backlight_set(uint8_t percent, uint32_t fade_time_ms)
 {
   if (s_bl_handle)
   {
-    ESP_ERROR_CHECK(lcd_backlight_set_brightness(s_bl_handle, percent, fade_time_ms));
+    // Not ESP_ERROR_CHECK: this runs on every brightness keypress and on the deep-sleep fade,
+    // so a transient LEDC error (fade service busy, invalid state) used to reboot the device
+    // mid-interaction. The backlight simply keeps its previous level instead.
+    const esp_err_t ret = lcd_backlight_set_brightness(s_bl_handle, percent, fade_time_ms);
+    if (ret != ESP_OK)
+    {
+      ESP_LOGW(tag, "Failed to set brightness to %d%%: %s", percent, esp_err_to_name(ret));
+    }
   }
 }
 

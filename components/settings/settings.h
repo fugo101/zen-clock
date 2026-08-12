@@ -8,9 +8,21 @@ extern "C"
 {
 #endif
 
+/**
+ * @brief Lowest brightness the device will ever apply or store, in percent.
+ *
+ * The backlight is the only way to read the settings screen, so 0% is not a valid setting —
+ * it hides the control needed to undo it. Enforced on both read and write in settings.c, and
+ * used as the `.min` of the Brightness item in the UI so the two cannot drift apart.
+ */
+#define SETTINGS_BRIGHTNESS_MIN 10
+
   /**
    * @brief Initialize the NVS flash.
    * Must be called early in app_main before reading/writing settings.
+   *
+   * Never aborts: if NVS cannot be initialized the device runs on compiled-in defaults and
+   * nothing persists, which is preferable to a boot loop on a worn flash partition.
    */
   void settings_init(void);
 
@@ -28,13 +40,14 @@ extern "C"
 
   /**
    * @brief Get the stored brightness percentage.
-   * @return Brightness 0–100 (default: 100 if not set).
+   * @return Brightness SETTINGS_BRIGHTNESS_MIN–100 (default: 100 if not set). A lower value
+   *         stored by an older build is clamped up, so the screen can always be read.
    */
   uint8_t settings_get_brightness(void);
 
   /**
    * @brief Store brightness percentage to NVS.
-   * @param percent Brightness 0–100 (clamped if exceeds 100).
+   * @param percent Brightness, clamped into SETTINGS_BRIGHTNESS_MIN–100.
    */
   void settings_set_brightness(uint8_t percent);
 

@@ -343,7 +343,16 @@ void device_info_screen_create(lv_obj_t *parent)
   // Sized for the descriptor's declared bounds (version[32] + ' ' + date[16]), not the
   // typical "0.2.3 Aug 10 2026" — otherwise -Wformat-truncation fails the -Werror build.
   char fw_buf[48];
-  snprintf(fw_buf, sizeof(fw_buf), "%s %s", app->version, app->date);
+  if (app)
+  {
+    snprintf(fw_buf, sizeof(fw_buf), "%s %s", app->version, app->date);
+  }
+  else
+  {
+    // Should not happen on a normally linked image, but this is an info screen — showing a
+    // placeholder beats faulting on a NULL deref just to display a version string.
+    snprintf(fw_buf, sizeof(fw_buf), "unknown");
+  }
   lv_label_set_text(s_value_labels[ROW_FIRMWARE], fw_buf);
 
   uint8_t mac[6];

@@ -227,6 +227,44 @@ sign extension of *negative* values, which cannot occur here.
 
 ---
 
+### `app_main` can be made static — `misc-use-internal-linkage`
+
+**Do not follow this one.** `app_main` is the application entry point and the IDF startup task
+reaches it by external linkage:
+
+```c
+// framework-espidf/components/freertos/app_startup.c:198
+extern void app_main(void);
+app_main();
+```
+
+Marking it `static` gives it internal linkage and the firmware fails to link.
+
+Note the same trap as `bugprone-signed-bitwise` below: `misc-use-internal-linkage` is **not**
+enabled by this repo's `.clang-tidy` (the `misc-*` family is opted into one check at a time —
+only `misc-redundant-expression` and `misc-unused-parameters`). If you see it, it is coming from
+the IDE's own profile, not from the project. Suppressed at the definition with a
+`NOLINTNEXTLINE(misc-use-internal-linkage)` plus a comment, so it stays suppressed regardless of
+which config turned it on.
+
+The check is correct in general — any file-scope helper that really is single-translation-unit
+should be `static`. It is only wrong for entry points and for symbols an external caller resolves.
+
+---
+
+### Variable set but never read
+
+Clangd reports this outside `.clang-tidy` entirely. Treat it as a real finding, not a style nit:
+a file-scope pointer that is only ever assigned is state the reader has to account for and
+nothing benefits from.
+
+Encountered on `s_sta_netif` in `wifi_manager.c`, which held the return of
+`esp_netif_create_default_wifi_sta()` and was never read. Fixed by dropping the variable and
+discarding the return — the handle is recoverable via
+`esp_netif_get_handle_from_ifkey("WIFI_STA_DEF")` if a deinit path is ever added.
+
+---
+
 ## Do Not Suppress
 
 | Warning | Reason |

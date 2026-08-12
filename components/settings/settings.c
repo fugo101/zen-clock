@@ -25,11 +25,41 @@ void settings_init(void)
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
   {
     ESP_LOGW(tag, "NVS needs to be erased. Erasing...");
-    ESP_ERROR_CHECK(nvs_flash_erase());
+    const esp_err_t erase_ret = nvs_flash_erase();
+    if (erase_ret != ESP_OK)
+    {
+      // Aborting here turned a worn-out or missing NVS partition into a permanent boot loop.
+      // Every getter below already falls back to a compiled-in default when nvs_open() fails,
+      // so a device that cannot persist settings is still a perfectly usable clock.
+      ESP_LOGE(tag, "nvs_flash_erase failed (%s) — continuing with defaults, settings will not persist",
+               esp_err_to_name(erase_ret));
+      return;
+    }
     ret = nvs_flash_init();
   }
-  ESP_ERROR_CHECK(ret);
+  if (ret != ESP_OK)
+  {
+    ESP_LOGE(tag, "nvs_flash_init failed (%s) — continuing with defaults, settings will not persist",
+             esp_err_to_name(ret));
+    return;
+  }
   ESP_LOGI(tag, "NVS initialized.");
+}
+
+// Below SETTINGS_BRIGHTNESS_MIN the panel is unreadable, and the settings screen is the only way
+// back up — so a stored 0 (which older firmware allowed) locked the user out for good. Clamping on
+// read as well as on write is what recovers a device that already has 0 in NVS.
+static uint8_t clamp_brightness(uint8_t percent)
+{
+  if (percent > 100)
+  {
+    return 100;
+  }
+  if (percent < SETTINGS_BRIGHTNESS_MIN)
+  {
+    return SETTINGS_BRIGHTNESS_MIN;
+  }
+  return percent;
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
@@ -119,16 +149,13 @@ uint8_t settings_get_brightness(void)
   }
 
   nvs_close(my_handle);
-  return val;
+  return clamp_brightness(val);
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void settings_set_brightness(uint8_t percent)
 {
-  if (percent > 100)
-  {
-    percent = 100;
-  }
+  percent = clamp_brightness(percent);
 
   nvs_handle_t my_handle;
   esp_err_t err = nvs_open(nvs_namespace, NVS_READWRITE, &my_handle);

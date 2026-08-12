@@ -44,7 +44,11 @@ static void clock_timer_cb(lv_timer_t *timer) // NOLINT(readability-non-const-pa
 
   char buf[2] = {'\0', '\0'};
 
-  const bool is_24h = settings_get_time_format_24h();
+  // Derived from the layout rather than re-read from NVS: an nvs_open/get/close here cost a
+  // flash read 86 400 times a day on the LVGL task. The AM/PM label exists only in 12H mode,
+  // so it already carries the answer — the same trick s_digits[4] uses for show_seconds below.
+  // Changing the format re-creates the clock screen (nav.c), which re-reads the setting.
+  const bool is_24h = (s_ampm_label == NULL);
   int h = is_24h ? timeinfo.tm_hour : (timeinfo.tm_hour % 12 != 0 ? timeinfo.tm_hour % 12 : 12);
 
   buf[0] = (char) ('0' + h / 10);
