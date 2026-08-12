@@ -1,4 +1,4 @@
 [submodule "vendor/microlink"]
 	path = vendor/microlink
 	url = https://github.com/fudio101/microlink.git
-	branch = esp-idf-6x-compat
+	branch = main

@@ -48,22 +48,26 @@ git fetch smartalock
 git log --oneline smartalock/master -- src/
 ```
 
-> The `vendor/microlink` fork currently defines only `origin` (`fudio101/microlink`) and `upstream`
-> (`CamM2325/microlink`) — there is no remote pointing at `smartalock/wireguard-lwip`, which is why
-> this section exists. Adding the remote above belongs in the microlink repo, not here.
+> Also documented directly in `vendor/microlink/components/wireguard_lwip/README.md` as of
+> 2026-08-12, so it survives independently of this file for anyone working from the microlink repo.
 
 ### `components/microlink/` → `vendor/microlink/components/microlink/`
 
 | | |
 |---|---|
 | **Upstream** | https://github.com/CamM2325/microlink |
-| **Fork used** | https://github.com/fudio101/microlink (branch `esp-idf-6x-compat`) |
+| **Fork used** | https://github.com/fudio101/microlink (branch `main`) |
 | **Author** | Cameron Malone |
 | **License** | MIT — `vendor/microlink/LICENSE` |
-| **Pinned at** | `fce0875792e22f154f12a4fdc0866163c2026996` (`v2.0.0-8-gfce0875` — 8 commits past the tag) |
+| **Pinned at** | `8c3e762` (`v2.1.0-7-g8c3e762`) |
 
-The pin is deliberately past `v2.0.0` for the ESP-IDF 6.x compatibility work. Move it only together
-with an update to the commit hash above.
+**2026-08-12:** the fork's `esp-idf-6x-compat` branch (`main` + one ESP-IDF 6.x/mbedTLS 4.x/GCC 15
+compat commit) was fast-forward merged into `main` and never diverged again — `.gitmodules` now
+tracks `main` directly instead of a side branch. Two more fixes landed on `main` the same day: the
+Kconfig credentials comment no longer claims sdkconfig "should be git-ignored" (true for the fork's
+own examples, false for this project, which tracks sdkconfig and uses `scripts/check_secrets.py`
+instead), and `wireguard_lwip/README.md` gained the divergence warning + upstream-check procedure
+directly in the fork.
 
 ---
 
