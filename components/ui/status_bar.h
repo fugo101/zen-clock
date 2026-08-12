@@ -33,6 +33,7 @@ extern "C"
     WIFI_STATUS_CONNECTING,
     WIFI_STATUS_VERIFYING,    // Got IP, checking internet
     WIFI_STATUS_CONNECTED,    // Verified online
+    WIFI_STATUS_NO_INTERNET,  // Associated with an IP, but the internet check failed
     WIFI_STATUS_PROVISIONING, // BLE provisioning active — waiting for credentials
   } wifi_status_t;
 

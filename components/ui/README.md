@@ -158,12 +158,24 @@ void clock_face_destroy(void);            // stop timer before deleting parent
 ```c
 void status_bar_create(lv_obj_t *parent);
 void status_bar_destroy(void);
-void status_bar_set_wifi_status(wifi_status_t status); // includes WIFI_STATUS_PROVISIONING
-void status_bar_set_sntp_status(sntp_status_t status); // visible only when SYNCING, hidden otherwise
+void status_bar_set_wifi_status(wifi_status_t status); // incl. NO_INTERNET and PROVISIONING
+void status_bar_set_sntp_status(sntp_status_t status); // SYNCING orange, FAILED red, otherwise hidden
 void status_bar_set_ts_status(ts_status_t status);     // Tailscale: idle/connecting/connected/error
 ```
 
-Icon chain (right-to-left): `[TS ⇄] [NTP ↻ — syncing only] [WiFi] [BatIcon] [BatPct]`
+Icon chain (right-to-left): `[TS ⇄] [NTP ↻ — syncing or failed] [WiFi] [BatIcon] [BatPct]`
+
+| WiFi state | Colour |
+|---|---|
+| `DISCONNECTED` | dim, no colour |
+| `SCANNING` | 70% opacity, no colour |
+| `CONNECTING` | orange |
+| `VERIFYING` | light blue |
+| `CONNECTED` | green |
+| `NO_INTERNET` | **yellow** — associated with an IP, but the DNS probe failed |
+| `PROVISIONING` | cyan |
+
+`NO_INTERNET` clears when NTP next succeeds — reaching a time server proves the internet is back.
 
 Internal 30-second LVGL timer refreshes battery level automatically.
 

@@ -40,6 +40,10 @@ static int s_reconnect_backoff_s = RECONNECT_BACKOFF_START_S;
 #define TS_POLL_PERIOD_US       (10ULL * 1000000ULL)
 static bool s_sntp_started = false;
 
+// True while WiFi is associated but the DNS probe failed. Kept here rather than queried from the
+// status bar so the recovery rule lives next to the events that drive it.
+static bool s_wifi_unverified = false;
+
 // Written once by the wifi_mgr task; read by the esp_timer task in ts_poll_cb(). No lock:
 // the ts_poll timer is only armed *after* the assignment below, so a reader can never
 // observe the pre-init value, and the rebind path does not reassign it. volatile keeps the
@@ -392,6 +396,17 @@ void on_sntp_sync(const sntp_sync_event_t event)
     ESP_LOGI(tag, "NTP time synchronized!");
     lvgl_port_lock(0);
     status_bar_set_sntp_status(SNTP_STATUS_SYNCED);
+    // Reaching an NTP server proves the internet works, so this doubles as the recovery signal
+    // for a connection that failed its DNS probe earlier — the captive portal has been signed
+    // into, or the upstream came back. Cheaper and safer than re-probing from the WiFi task,
+    // which would mean an unbounded getaddrinfo() inside a state wifi_manager_stop() must be
+    // able to interrupt.
+    if (s_wifi_unverified)
+    {
+      ESP_LOGI(tag, "Internet confirmed by NTP — clearing no-internet state");
+      s_wifi_unverified = false;
+      status_bar_set_wifi_status(WIFI_STATUS_CONNECTED);
+    }
     lvgl_port_unlock();
     break;
 
@@ -524,6 +539,9 @@ void on_wifi_event(const wifi_manager_event_t event)
 
   case WIFI_MGR_CONNECTED:
     cancel_reconnect();
+    // Cleared before painting: a later connection to a working network must not inherit the flag
+    // from an earlier one. WIFI_MGR_NO_INTERNET, if it comes, arrives immediately after this.
+    s_wifi_unverified = false;
     lvgl_port_lock(0);
     status_bar_set_wifi_status(WIFI_STATUS_CONNECTED);
     lvgl_port_unlock();
@@ -596,6 +614,17 @@ void on_wifi_event(const wifi_manager_event_t event)
     }
     break;
 
+  case WIFI_MGR_NO_INTERNET:
+    // Arrives right after CONNECTED, deliberately, so it paints over the green the handler above
+    // just set. The device stays fully operational on the LAN; only the icon disagrees with
+    // "online", which is the honest reading when NTP is about to fail.
+    ESP_LOGW(tag, "Associated but no internet — clock time may be wrong");
+    s_wifi_unverified = true;
+    lvgl_port_lock(0);
+    status_bar_set_wifi_status(WIFI_STATUS_NO_INTERNET);
+    lvgl_port_unlock();
+    break;
+
   case WIFI_MGR_SCAN_DONE:
     ESP_LOGI(tag, "WiFi scan complete");
     break;
@@ -613,6 +642,7 @@ void on_wifi_event(const wifi_manager_event_t event)
   case WIFI_MGR_NO_MATCH:
   case WIFI_MGR_ALL_FAILED:
     ESP_LOGW(tag, "WiFi unavailable (event=%d) — will retry with backoff", (int) event);
+    s_wifi_unverified = false; // no connection at all now; the yellow state no longer applies
     lvgl_port_lock(0);
     status_bar_set_wifi_status(WIFI_STATUS_DISCONNECTED);
     lvgl_port_unlock();

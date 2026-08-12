@@ -6,6 +6,11 @@ The `sntp_sync` component provides NTP-based time synchronization for the ZenClo
 It handles the initial sync and automatic periodic re-synchronization (default: every 1 hour) to combat
 ESP32 RTC drift, using primary (VNIX) and fallback (Pool NTP, Google) servers.
 
+**A failed sync does not wait out the hour.** The interval applies only after a success; a failure retries on a
+backoff of 30 s doubling to a 5-minute ceiling, resetting to the hourly cadence once a sync lands. Without this, a
+boot with no internet displayed `01/01/1970` for a full hour before trying again — and, since a successful sync is
+what clears the status bar's "no internet" state, the yellow WiFi icon would have persisted just as long.
+
 On wake from deep sleep, the component checks `RTC_DATA_ATTR` memory for the last successful sync timestamp.
 If the elapsed time is within the 1-hour resync interval, the initial NTP sync is skipped and `SNTP_EVENT_SYNCED`
 is reported immediately — reducing reconnect latency after short sleep cycles.

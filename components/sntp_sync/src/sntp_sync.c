@@ -22,6 +22,13 @@ static const char *const tag = "SNTP";
 
 #define SNTP_RESYNC_INTERVAL_S 3600 // Re-sync every 1 hour (ESP32 RTC drift ~72ms/hr)
 
+// A failed sync must not wait out the full hour. The clock is showing the wrong time — often
+// 01/01/1970 on a first boot with no internet — and an hour is a long time to display that before
+// even trying again. Same shape as the WiFi reconnect backoff in app_handlers.c so the two behave
+// alike: start at 30 s, double, cap at 5 minutes, and reset once a sync lands.
+#define SNTP_RETRY_START_S 30
+#define SNTP_RETRY_MAX_S   300
+
 static bool s_synced = false;
 static sntp_sync_cb_t s_on_sync = NULL;
 static TaskHandle_t s_sntp_task = NULL;
@@ -130,6 +137,10 @@ static void sntp_task(void *arg) // NOLINT(readability-non-const-parameter)
     }
   }
 
+  // How long to wait before the next attempt. Full interval after a success, short backoff after
+  // a failure — including the initial sync above, so a boot with no internet retries in 30 s.
+  uint32_t wait_s = s_synced ? SNTP_RESYNC_INTERVAL_S : SNTP_RETRY_START_S;
+
   // --- Periodic re-sync loop ---
   // On first iteration after deep sleep wake, skip_initial=true means we already
   // waited out the remaining interval above, so go straight to re-sync.
@@ -137,7 +148,9 @@ static void sntp_task(void *arg) // NOLINT(readability-non-const-parameter)
   {
     if (!skip_initial)
     {
-      xEventGroupWaitBits(s_eg, SNTP_BIT_RESYNC, pdTRUE, pdFALSE, pdMS_TO_TICKS(SNTP_RESYNC_INTERVAL_S * 1000));
+      // Still the same wait primitive, so sntp_sync_notify_connected() can cut it short on a
+      // WiFi reconnect exactly as before — only the timeout differs.
+      xEventGroupWaitBits(s_eg, SNTP_BIT_RESYNC, pdTRUE, pdFALSE, pdMS_TO_TICKS(wait_s * 1000));
     }
     skip_initial = false;
 
@@ -146,7 +159,7 @@ static void sntp_task(void *arg) // NOLINT(readability-non-const-parameter)
       s_on_sync(SNTP_EVENT_SYNCING);
     }
 
-    ESP_LOGI(tag, "Re-syncing NTP (interval=%ds)...", SNTP_RESYNC_INTERVAL_S);
+    ESP_LOGI(tag, "Re-syncing NTP...");
     esp_sntp_restart();
 
     bool ok = wait_for_sync(5); // 5 × 2s = 10s max for re-sync
@@ -155,11 +168,17 @@ static void sntp_task(void *arg) // NOLINT(readability-non-const-parameter)
       s_synced = true;
       s_last_sync_rtc = time(NULL);
       log_synced_time();
+      wait_s = SNTP_RESYNC_INTERVAL_S;
     }
     else
     {
-      ESP_LOGW(tag, "NTP re-sync timeout");
       s_synced = false;
+      wait_s = (wait_s >= SNTP_RESYNC_INTERVAL_S) ? SNTP_RETRY_START_S : wait_s * 2;
+      if (wait_s > SNTP_RETRY_MAX_S)
+      {
+        wait_s = SNTP_RETRY_MAX_S;
+      }
+      ESP_LOGW(tag, "NTP re-sync timeout — retrying in %lus", (unsigned long) wait_s);
     }
 
     if (s_on_sync)

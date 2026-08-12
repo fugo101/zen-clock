@@ -36,6 +36,10 @@ extern "C"
     WIFI_MGR_CONNECTING,   // Trying to connect
     WIFI_MGR_GOT_IP,       // Got IP but not yet verified online
     WIFI_MGR_CONNECTED,    // Verified online (DNS probe OK)
+    WIFI_MGR_NO_INTERNET,  // Fired right after CONNECTED when the DNS probe failed. Informational:
+                           // the state machine still enters CONNECTED, because the association and
+                           // the IP lease are real and a LAN-only network is usable. Exists so the
+                           // UI can say so instead of showing a plain "online".
     WIFI_MGR_DISCONNECTED, // Lost connection — caller should start BLE provisioning
     WIFI_MGR_SCAN_DONE,    // WiFi scan complete
     WIFI_MGR_NO_CRED,      // No credential in NVS — caller should start BLE provisioning

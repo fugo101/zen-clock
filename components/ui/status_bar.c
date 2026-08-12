@@ -208,6 +208,15 @@ void status_bar_set_wifi_status(wifi_status_t status)
     lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_GREEN), 0);
     break;
 
+  case WIFI_STATUS_NO_INTERNET:
+    // Yellow, not green: the association and the IP lease are real, so this is not a
+    // disconnection, but the DNS probe failed and anything needing the internet — NTP above all
+    // — will not work. Without this the device showed a plain green icon while displaying 1970.
+    lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
+    lv_obj_set_style_text_opa(s_wifi_icon, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_YELLOW), 0);
+    break;
+
   case WIFI_STATUS_PROVISIONING:
     lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
     lv_obj_set_style_text_opa(s_wifi_icon, LV_OPA_COVER, 0);
@@ -228,16 +237,31 @@ void status_bar_set_sntp_status(sntp_status_t status)
     return;
   }
 
-  if (status == SNTP_STATUS_SYNCING)
+  // A switch, not an if/else: FAILED used to fall into the else and hide the icon, which is how a
+  // device could sit there showing 01/01/1970 with a completely clean status bar. Enumerating the
+  // cases means the compiler flags the next status someone adds instead of silently hiding it.
+  switch (status)
   {
+  case SNTP_STATUS_SYNCING:
     lv_obj_remove_flag(s_sntp_icon, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(s_sntp_icon, LV_SYMBOL_REFRESH);
     lv_obj_set_style_text_opa(s_sntp_icon, LV_OPA_COVER, 0);
     lv_obj_set_style_text_color(s_sntp_icon, lv_palette_main(LV_PALETTE_ORANGE), 0);
-  }
-  else
-  {
+    break;
+
+  case SNTP_STATUS_FAILED:
+    // Red and visible. The time on screen is wrong and nothing else says so.
+    lv_obj_remove_flag(s_sntp_icon, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(s_sntp_icon, LV_SYMBOL_REFRESH);
+    lv_obj_set_style_text_opa(s_sntp_icon, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(s_sntp_icon, lv_palette_main(LV_PALETTE_RED), 0);
+    break;
+
+  case SNTP_STATUS_IDLE:
+  case SNTP_STATUS_SYNCED:
+    // Nothing to report — hidden, so the icon chain collapses around it.
     lv_obj_add_flag(s_sntp_icon, LV_OBJ_FLAG_HIDDEN);
+    break;
   }
 
   // Re-align chain — TS anchors to WiFi when SNTP is hidden
