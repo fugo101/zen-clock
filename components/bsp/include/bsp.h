@@ -38,6 +38,14 @@ extern "C"
    */
   uint8_t bsp_display_get_brightness(void);
 
+  /**
+   * @brief Cut power to the LCD and latch the rail off across deep sleep.
+   *
+   * Call immediately before esp_deep_sleep_start(); the latch is released on the next boot by
+   * bsp_display_init(). Fade the backlight out first — this kills the panel rail outright.
+   */
+  void bsp_display_power_off(void);
+
   // ============================================================
   // Battery Monitoring
   // ============================================================

@@ -70,7 +70,7 @@ provisioning, and a retry must always stay armed.
 | `components/ble_provisioning/` | BLE WiFi provisioning via `espressif/network_provisioning`                                                                                                                                                                 |
 | `components/settings/`         | NVS-backed settings: theme, brightness, sleep timeout (H/M/S)                                                                                                                                                              |
 | `components/sntp_sync/`        | NTP time synchronization; skips initial sync on deep-sleep wake if recently synced                                                                                                                                         |
-| `components/deep_sleep/`       | Auto-sleep timer (inactivity) + manual trigger + ext1 wakeup on GPIO0/GPIO14                                                                                                                                               |
+| `components/deep_sleep/`       | Auto-sleep timer (inactivity) + manual trigger + ext1 wakeup on GPIO0/GPIO14. Cancellable during the fade; declines while an inhibit callback says so. Cuts the LCD rail and latches it — see the hold/release warning below |
 | `components/lcd_backlight/`    | LCD backlight driver via LEDC PWM                                                                                                                                                                                          |
 | `components/microlink/`        | Tailscale VPN client — symlink → `vendor/microlink/components/microlink`                                                                                                                                                   |
 | `components/wireguard_lwip/`   | WireGuard lwIP netif — symlink → `vendor/microlink/.../wireguard_lwip`. Third-party BSD-3 ([smartalock/wireguard-lwip](https://github.com/smartalock/wireguard-lwip)), diverged fork — see `THIRD_PARTY.md` before syncing |
@@ -139,6 +139,9 @@ Clock face is swappable: replace `clock_face_text.c` with another implementation
 | IO14 (GPIO14)              | Navigate DOWN / decrease value in edit | BACK / exit edit mode (no-op on Clock face)       | Reset WiFi → BLE provisioning (or `esp_restart()` if BLE RAM freed) |
 | BOOT + IO14 simultaneously | —                                      | Trigger deep sleep (backlight fades 1.5s → sleep) | —                                                                   |
 
+Any button press during the fade cancels the sleep and restores brightness. Sleep is declined
+outright while the provisioning QR is on screen.
+
 Theme and brightness are now adjusted via the Settings screen (Settings → Theme, Settings → Brightness).
 
 ### WiFi Manager API
@@ -168,6 +171,18 @@ lvgl_port_unlock();
 
 **Never hardcode colors** (e.g., `lv_color_white()`). The UI supports Light and Dark themes — use theme-aware color
 access.
+
+### Deep Sleep: the LCD rail is latched
+
+`bsp_display_power_off()` drives `PIN_LCD_PWR` (GPIO15) low and calls `gpio_hold_en()` on it, so the
+rail stays off through deep sleep. **That latch outlives the sleep and the reboot that follows.**
+`init_power()` in `bsp_display.c` releases it with `gpio_hold_dis()` after driving the pad high —
+that order is required by the driver. Remove or reorder those calls and the device wakes with a
+permanently dark screen and looks bricked. It is not: reflashing runs `gpio_hold_dis()` again.
+
+`gpio_deep_sleep_hold_en()` is deliberately **not** used — it would latch every digital pad,
+including the two wake buttons. GPIO15 is inside the ESP32-S3 RTC range (0-21), so `gpio_hold_en()`
+alone survives sleep.
 
 ### BLE Provisioning Gotchas
 
