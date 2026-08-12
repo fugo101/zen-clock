@@ -10,12 +10,14 @@
 #include "deep_sleep.h"
 #include "wifi_manager.h"
 #include "sntp_sync.h"
+#include "settings.h"
 #include "status_bar.h"
 #include "ble_provisioning.h"
 #include "prov_screen.h"
 #include "nav.h"
 #include "microlink.h"
 #include "device_info_screen.h"
+#include <freertos/queue.h>
 
 static const char *const tag = "ZenClock";
 
@@ -161,6 +163,117 @@ static void ts_poll_cb(void *arg)
 }
 
 // ============================================================
+// Battery policy — status_bar owns the ADC poll, this owns what to do with it
+// ============================================================
+
+// Ceiling applied while the battery is low. Not written to NVS: settings_get_brightness() still
+// holds what the user actually chose, and that is what gets restored once the battery recovers
+// or USB is plugged back in.
+#define BATT_LOW_BRIGHTNESS 30
+
+// Edge-triggered, not level-triggered. The reading arrives every 30s; clamping on every tick would
+// fight a user who deliberately raises brightness while low (it would be pushed back down within
+// half a minute), which is confusing since nothing they did caused it. Acting only on the
+// low/not-low transition means it steps in once and then leaves the display alone.
+static bool s_low_batt_active = false;
+
+static void on_battery_reading(const int pct, const bool usb)
+{
+  // USB power is never "low" — the alarm is about running out, not about charge level while
+  // plugged in — and BATT_LOW_PCT does not apply when pct is -1 (no reading).
+  const bool low = pct >= 0 && !usb && pct < BATT_LOW_PCT;
+  if (low == s_low_batt_active)
+  {
+    return;
+  }
+  s_low_batt_active = low;
+
+  if (low)
+  {
+    const uint8_t current = bsp_display_get_brightness();
+    if (current > BATT_LOW_BRIGHTNESS)
+    {
+      ESP_LOGW(tag, "Battery low (%d%%) — clamping brightness to %d%%", pct, BATT_LOW_BRIGHTNESS);
+      bsp_display_set_brightness(BATT_LOW_BRIGHTNESS, 500);
+    }
+  }
+  else
+  {
+    ESP_LOGI(tag, "Battery recovered — restoring brightness");
+    bsp_display_set_brightness(settings_get_brightness(), 500);
+  }
+}
+
+// ============================================================
+// Button worker — heavy nav actions run here, off the button task
+// ============================================================
+
+// do_reset_wifi() alone can hold the CPU for seconds: wifi_manager_stop() polls up to
+// STOP_TIMEOUT_MS, plus NVS erase, plus bringing up BLE (esp_srp_gen_salt_verifier() on a
+// 3072-bit MPI). Running that inline on the button task stalled bsp_buttons.c's held_ms counter
+// — which is just BTN_POLL_MS accumulated in a loop, so a stalled task stops counting — skewing
+// every long-press/emergency threshold measured afterwards, dropped presses queued during the
+// stall (the drain loop discards them), and made the two-button sleep combo unreachable while a
+// reset was in flight. Everything that can block now goes through this queue instead.
+#define BTN_WORKER_STACK     6144
+#define BTN_WORKER_PRIORITY  2 // below BTN_TASK_PRIORITY (3, bsp_buttons.c) so button polling wins
+#define BTN_WORKER_QUEUE_LEN 4
+
+static QueueHandle_t s_btn_worker_queue = NULL;
+static TaskHandle_t s_btn_worker_task = NULL;
+
+static void btn_worker_task(void *arg) // NOLINT(readability-non-const-parameter)
+{
+  (void) arg;
+  nav_action_cb_t cb;
+  for (;;) // NOLINT
+  {
+    if (xQueueReceive(s_btn_worker_queue, &cb, portMAX_DELAY) == pdTRUE && cb)
+    {
+      cb();
+    }
+  }
+}
+
+static void btn_worker_init(void)
+{
+  s_btn_worker_queue = xQueueCreate(BTN_WORKER_QUEUE_LEN, sizeof(nav_action_cb_t));
+  if (!s_btn_worker_queue)
+  {
+    ESP_LOGE(tag, "Failed to create button worker queue — actions will run inline on the button task");
+    return;
+  }
+  if (xTaskCreate(btn_worker_task, "btn_worker", BTN_WORKER_STACK, NULL, BTN_WORKER_PRIORITY, &s_btn_worker_task) !=
+      pdPASS)
+  {
+    ESP_LOGE(tag, "Failed to create button worker task — actions will run inline on the button task");
+    vQueueDelete(s_btn_worker_queue);
+    s_btn_worker_queue = NULL;
+  }
+}
+
+// Queues a deferred nav action; falls back to running it inline if the worker never came up,
+// which is the pre-4E behaviour and better than silently dropping the action.
+static void post_to_worker(const nav_action_cb_t cb)
+{
+  if (!cb)
+  {
+    return;
+  }
+  if (!s_btn_worker_queue)
+  {
+    cb();
+    return;
+  }
+  // Never block: a full queue means four heavy actions are already backed up, which does not
+  // happen in practice. Blocking here would recreate the exact stall this queue exists to avoid.
+  if (xQueueSend(s_btn_worker_queue, &cb, 0) != pdTRUE)
+  {
+    ESP_LOGW(tag, "Button worker queue full — dropping action");
+  }
+}
+
+// ============================================================
 // Wi-Fi reset action (shared by emergency button + nav settings)
 // ============================================================
 
@@ -290,6 +403,8 @@ void app_handlers_register_nav_callbacks(void)
   nav_register_ntp_resync_cb(do_ntp_resync);
   nav_register_provisioning_cb(do_provisioning);
   deep_sleep_register_inhibit_cb(provisioning_in_progress);
+  status_bar_register_battery_cb(on_battery_reading);
+  btn_worker_init();
 }
 
 // ============================================================
@@ -308,7 +423,7 @@ void on_button_press(const int btn_id, const bsp_btn_event_t event)
   if (event == BSP_BTN_EMERGENCY && btn_id == BSP_BTN_IO14)
   {
     ESP_LOGW(tag, "Emergency: resetting WiFi → BLE provisioning");
-    do_reset_wifi();
+    post_to_worker(do_reset_wifi);
     return;
   }
 
@@ -351,12 +466,13 @@ void on_button_press(const int btn_id, const bsp_btn_event_t event)
 
   if (prov_visible)
   {
-    // Outside the lock: ble_provisioning_stop() tears down the manager and wifi_manager_start()
+    // Posted, not called: ble_provisioning_stop() tears down the manager and wifi_manager_start()
     // wakes the WiFi task — both block long enough to freeze the display and stall the event
-    // loop, which is exactly what Phase 2 moved the nav action callbacks off the lock to avoid.
+    // loop, which is exactly what Phase 2 moved the nav action callbacks off the lock to avoid,
+    // and what the button worker (below) exists to keep off this task entirely.
     if (dismissed)
     {
-      dismiss_provisioning();
+      post_to_worker(dismiss_provisioning);
     }
     return;
   }
@@ -365,15 +481,12 @@ void on_button_press(const int btn_id, const bsp_btn_event_t event)
   nav_action_cb_t deferred = nav_handle_action(action);
   lvgl_port_unlock();
 
-  // Run action items only after the lock is released. do_reset_wifi() alone can hold the
-  // CPU for seconds (wifi_manager_stop polls up to 6s, NVS erase, BLE bring-up + SRP), and
-  // doing that under the lock froze the display and stalled the esp_event loop — which
-  // BLE provisioning needs to deliver its own BLE_PROV_STARTED. nav_handle_action() touches
-  // no LVGL after resolving this, and the emergency path above already runs it lock-free.
-  if (deferred)
-  {
-    deferred();
-  }
+  // Posted after the lock is released, not called inline. nav_handle_action() touches no LVGL
+  // after resolving this, so the lock is already clear either way — but running action items
+  // (do_reset_wifi() above all) synchronously here still parked the button task for seconds,
+  // which stalls held_ms accounting in bsp_buttons.c and makes the two-button sleep combo
+  // unreachable mid-reset. The worker runs them instead.
+  post_to_worker(deferred);
 }
 
 // ============================================================
