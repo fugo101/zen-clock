@@ -38,6 +38,10 @@ static QueueHandle_t s_btn_queue = NULL;
 // ============================================================
 // GPIO ISR — sends button ID to queue to wake the task
 // ============================================================
+// readability-identifier-naming misreads the IRAM_ATTR attribute macro as a variable; arg is
+// used via the cast below (same misc-unused-parameters false positive as rssi_compare() /
+// wifi_cred_load() — see docs/clang-tidy-suppressions.md).
+// NOLINTNEXTLINE(readability-identifier-naming, misc-unused-parameters)
 static void IRAM_ATTR gpio_isr_handler(void *arg)
 {
   int btn_id = (int) (intptr_t) arg;

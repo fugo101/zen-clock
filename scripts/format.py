@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 
-def find_clang_format():
+def find_clang_format(allow_auto_install=True):
     """Find clang-format: system binary first, then pip package."""
     # 1. System-installed clang-format (brew, apt, choco, etc.)
     exe = shutil.which("clang-format")
@@ -18,17 +18,20 @@ def find_clang_format():
     except ImportError:
         pass
 
-    # 3. Auto-install pip package (works on Windows; skipped on managed envs)
-    print("clang-format not found. Attempting pip install...")
-    try:
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--user", "clang-format"],
-            stdout=subprocess.DEVNULL,
-        )
-        import clang_format
-        return clang_format.get_executable("clang-format")
-    except (subprocess.CalledProcessError, ImportError):
-        pass
+    # 3. Auto-install pip package (works on Windows; skipped on managed envs). Skipped in
+    # --check mode: CI should fail with clear instructions, not silently pull an unpinned
+    # package from PyPI mid-run on a persistent self-hosted runner.
+    if allow_auto_install:
+        print("clang-format not found. Attempting pip install...")
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "--user", "clang-format"],
+                stdout=subprocess.DEVNULL,
+            )
+            import clang_format
+            return clang_format.get_executable("clang-format")
+        except (subprocess.CalledProcessError, ImportError):
+            pass
 
     print("Error: clang-format not found.", file=sys.stderr)
     print("Install via: brew install clang-format (macOS)")
@@ -74,8 +77,9 @@ def main():
     project_root = Path(__file__).parent.parent
 
     verbose = "-v" in sys.argv
-    # Get targets (everything else that is not script name or -v)
-    targets = [arg for arg in sys.argv[1:] if arg != "-v"]
+    check = "--check" in sys.argv
+    # Get targets (everything else that is not script name, -v, or --check)
+    targets = [arg for arg in sys.argv[1:] if arg not in ("-v", "--check")]
 
     files = get_source_files(project_root, targets)
 
@@ -84,20 +88,25 @@ def main():
         return
 
     if verbose:
-        print(f"Formatting {len(files)} files:")
+        action = "Checking" if check else "Formatting"
+        print(f"{action} {len(files)} files:")
         for f in files:
             print(f"  - {Path(f).relative_to(project_root)}")
     else:
-        print(f"Formatting {len(files)} files...")
+        action = "Checking" if check else "Formatting"
+        print(f"{action} {len(files)} files...")
 
-    clang_exe = find_clang_format()
-    cmd = [clang_exe, "-i"] + files
+    clang_exe = find_clang_format(allow_auto_install=not check)
+    cmd = [clang_exe, "--dry-run", "-Werror"] + files if check else [clang_exe, "-i"] + files
 
     try:
         subprocess.check_call(cmd, cwd=project_root)
-        print("Formatting complete!")
+        print("Formatting complete!" if not check else "All files formatted correctly.")
     except subprocess.CalledProcessError as e:
-        print(f"Error formatting files: {e}", file=sys.stderr)
+        if check:
+            print("Formatting check failed — run ./format.sh to fix.", file=sys.stderr)
+        else:
+            print(f"Error formatting files: {e}", file=sys.stderr)
         sys.exit(1)
 
 

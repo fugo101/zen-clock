@@ -4,6 +4,32 @@ Reference for suppressing warnings in this ESP32 embedded C project.
 
 ---
 
+## `pio check` ignores `.clang-tidy` unless told not to
+
+**Verified directly (2026-08-12), not documented anywhere in PlatformIO's own docs at the
+time of writing:** PlatformIO's `clangtidy` check tool always invokes clang-tidy with its own
+`--checks=*` flag first (confirmed via `pio check -v`), which enables **every** clang-tidy
+check across every module (`llvm-*`, `modernize-*`, `cppcoreguidelines-*`, etc.) regardless of
+what `.clang-tidy` says — clang-tidy uses whichever `-checks=`/`--checks=` occurrence comes
+**last** on the command line, and `.clang-tidy`'s own `Checks:` key is only consulted when
+there is no `-checks=` on the command line at all. Running plain `pio check -e
+lilygo-t-display-s3` therefore reports ~600+ findings from checks this project never enabled —
+and this is exactly what CLion's "Static Code Analysis" action runs under the hood, with no UI
+affordance to pass extra flags.
+
+**Fix:** `platformio.ini`'s `[env:lilygo-t-display-s3]` sets `check_tool`, `check_src_filters`,
+and `check_flags` (the last one carrying an explicit `-checks=` override that mirrors
+`.clang-tidy`'s `Checks:` string) — this applies to *every* caller of `pio check`, CLI or
+CLion, with zero extra steps. `.clang-tidy` is still what clangd uses for live inline linting
+in the editor. **The two `Checks:` strings cannot be derived from one another** — both files
+are static and neither can shell out to the other at parse time — so this is a deliberate,
+enforced duplication, not an oversight: run `python3 scripts/pio_check.py` (instead of `pio
+check` directly) for CI or a full local run; it fails loudly if the two strings have drifted
+apart, then runs the actual check with `--fail-on-defect medium` (a flag `platformio.ini`
+cannot express, since there is no `check_fail_on_defect` project option).
+
+---
+
 ## Suppression Methods
 
 ### 1. Inline — single line
@@ -224,6 +250,89 @@ defined as plain hex literals (`0x00000001`), which are `int`, so `BIT_STOP | BI
 also "signed bitwise". Harmless: every operand is a small positive constant, nothing shifts into
 the sign bit, and the result is assigned to `EventBits_t` (`uint32_t`). The rule exists to catch
 sign extension of *negative* values, which cannot occur here.
+
+---
+
+### Identical branches on `ESP_LOGx` / ternary assignments — `bugprone-branch-clone`
+
+**Disabled globally in `.clang-tidy`** (`-bugprone-branch-clone`), found and fixed when wiring
+`pio check` into CI (2026-08-12). Verified false-positive on two unrelated patterns in this
+codebase, not a check worth suppressing call-site by call-site:
+
+1. **Every `ESP_LOGx(...)` call.** `ESP_LOGW`/`ESP_LOGE`/`ESP_LOGI`/`ESP_LOGD` expand through
+   `ESP_LOG_LEVEL_LOCAL` → `ESP_LOG_LEVEL`, which is itself a long `if/else if` chain comparing
+   the compile-time-fixed log level against every possible level, each branch calling
+   `esp_log(...)` with an almost-identical shape (same call, different embedded format-string
+   level letter). `bugprone-branch-clone` walks into that expansion and reports "repeated
+   branch body in conditional chain" at the call site, in *our* file — verified directly with
+   `clang-tidy` invoked without PlatformIO's summarizer, which shows the diagnostic's macro
+   expansion trace running straight through `esp_log.h`. Every `ESP_LOGx` call in the project
+   triggers this; disabling call-site by call-site was not an option.
+2. **Ternary-assignment action mapping**, e.g. `src/app_handlers.c`:
+   ```c
+   if (btn_id == BSP_BTN_BOOT)
+   {
+     action = (event == BSP_BTN_SHORT) ? NAV_ACTION_UP : NAV_ACTION_SELECT;
+   }
+   else
+   {
+     action = (event == BSP_BTN_SHORT) ? NAV_ACTION_DOWN : NAV_ACTION_BACK;
+   }
+   ```
+   Flagged as "if with identical then and else branches" despite `NAV_ACTION_UP/DOWN/SELECT/
+   BACK` being four genuinely distinct enum values (checked `nav.h` directly to rule out an
+   accidental duplicate value — they are 0/1/2/3) — the two branches produce different,
+   necessary behavior. The check appears to match on statement *shape* here rather than fully
+   resolving the leaf enum constants.
+
+---
+
+### Unused parameter through a cast — `misc-unused-parameters` false positive
+
+Three confirmed false positives, all on a parameter that **is** used, just via a cast rather
+than a direct read — a plain C-style cast, not only the `auto`-typed alias form:
+
+```c
+static int rssi_compare(const void *a, const void *b) // NOLINT(misc-unused-parameters)
+{
+  const auto ap_a = (const wifi_ap_record_t *) a; // `a` is used right here
+  ...
+}
+```
+```c
+// NOLINTNEXTLINE(misc-unused-parameters) - out_ssid is used below via nvs_get_str
+bool wifi_cred_load(char *out_ssid, size_t ssid_len, char *out_pass, size_t pass_len)
+```
+```c
+// arg is used via the cast below
+static void IRAM_ATTR gpio_isr_handler(void *arg) // NOLINT(misc-unused-parameters, ...)
+{
+  int btn_id = (int) (intptr_t) arg;
+  ...
+}
+```
+All three parameters are read a few lines later in the function body — the third one (a plain
+`(int)(intptr_t) arg` cast, no `auto` involved) rules out "only `auto`-typed aliasing confuses
+the check" as the root cause; it is broader than that. Root cause not fully isolated (this
+version of `misc-unused-parameters` seems to lose track of a parameter once it is only ever
+read inside a cast expression rather than a bare reference), confirmed false rather than
+assumed by re-reading each function body directly. Suppressed at the three call sites found;
+if another shows up, check the function body before trusting the warning.
+
+---
+
+### `IRAM_ATTR` attribute misread as a variable — `readability-identifier-naming`
+
+```c
+// NOLINTNEXTLINE(readability-identifier-naming) - misreads the IRAM_ATTR attribute macro as a variable
+static void IRAM_ATTR gpio_isr_handler(void *arg)
+```
+
+`readability-identifier-naming`'s case-style check treats `IRAM_ATTR` (ESP-IDF's placement
+attribute macro, `__attribute__((section(...)))`) as if it were a variable named `IRAM_ATTR`
+needing `lower_case`, because of where it sits syntactically between the return type and the
+function name. Only one call site in the project uses `IRAM_ATTR` on a definition
+(`components/bsp/src/bsp_buttons.c`); if more appear, they need the same suppression.
 
 ---
 

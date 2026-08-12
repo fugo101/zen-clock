@@ -166,7 +166,7 @@ static void wifi_event_handler(void *arg, // NOLINT(readability-non-const-parame
 // ============================================================
 // Compare function for sorting AP records by RSSI (descending)
 // ============================================================
-static int rssi_compare(const void *a, const void *b)
+static int rssi_compare(const void *a, const void *b) // NOLINT(misc-unused-parameters) - a is used via the cast below
 {
   const auto ap_a = (const wifi_ap_record_t *) a;
   const wifi_ap_record_t *ap_b = b;

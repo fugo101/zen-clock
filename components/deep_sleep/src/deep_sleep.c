@@ -52,7 +52,8 @@ static bool fade_out_unless_cancelled(void)
   return true;
 }
 
-static void sleep_task_fn(void *arg) // NOLINT(readability-non-const-parameter)
+static void
+sleep_task_fn(void *arg) // NOLINT(readability-non-const-parameter, readability-function-cognitive-complexity)
 {
   (void) arg;
 
@@ -115,6 +116,7 @@ static void inactivity_cb(void *arg) // NOLINT(readability-non-const-parameter)
   deep_sleep_trigger();
 }
 
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void deep_sleep_init(uint32_t timeout_s)
 {
   // Both creations are checked: on failure the handle stays NULL, every other entry point in

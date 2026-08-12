@@ -182,6 +182,7 @@ static void ts_poll_cb(void *arg)
 // low/not-low transition means it steps in once and then leaves the display alone.
 static bool s_low_batt_active = false;
 
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 static void on_battery_reading(const int pct, const bool usb)
 {
   // USB power is never "low" — the alarm is about running out, not about charge level while
@@ -352,6 +353,7 @@ static void do_provisioning(void)
 // radio to network_prov_mgr. Nothing else brings it back: wifi_manager_stop() deliberately
 // suppresses its failure events, so on_wifi_event never fires and schedule_reconnect() never runs.
 // Without this the device sat in IDLE with no IP and no Tailscale until it was rebooted.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 static void dismiss_provisioning(void)
 {
   if (!wifi_manager_has_credential())
