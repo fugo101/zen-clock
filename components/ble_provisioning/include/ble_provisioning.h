@@ -21,6 +21,7 @@ extern "C"
     BLE_PROV_CRED_RECEIVED, // Credentials received — ssid/pass args are valid
     BLE_PROV_SUCCESS,       // Provisioning complete — safe to stop and release memory
     BLE_PROV_FAILED,        // Provisioning failed (bad credentials or error)
+    BLE_PROV_STOPPED,       // Service stopped without provisioning (cancelled) — do NOT release memory
   } ble_prov_event_t;
 
   // ssid and pass are only non-NULL for BLE_PROV_CRED_RECEIVED
@@ -45,14 +46,14 @@ extern "C"
   /**
    * @brief Stop BLE provisioning and deinit the manager.
    *
-   * @warning Do NOT wire this to a user-facing "cancel". NETWORK_PROV_END means "the service
-   *          stopped", not "provisioning succeeded", and the event handler reports every END as
-   *          BLE_PROV_SUCCESS. The app's BLE_PROV_SUCCESS path calls
-   *          ble_provisioning_release_memory(), which frees ~110 KB of BT RAM permanently — so a
-   *          cancel would silently make the device unprovisionable until reflashed.
-   *          Currently safe only because the single call site is inside that success handler.
-   *          Adding a cancel requires distinguishing the outcome first (latch
-   *          NETWORK_PROV_WIFI_CRED_SUCCESS and branch on it in the END case).
+   * Safe to use as a user-facing "cancel". NETWORK_PROV_END means "the service stopped", not
+   * "provisioning succeeded", so the handler latches NETWORK_PROV_WIFI_CRED_SUCCESS and reports
+   * BLE_PROV_SUCCESS only for a genuine completion; a cancel reports BLE_PROV_STOPPED instead.
+   *
+   * @warning That distinction is what keeps a cancel survivable: only the BLE_PROV_SUCCESS path
+   *          may call ble_provisioning_release_memory(), which frees ~110 KB of BT RAM
+   *          permanently. Handling BLE_PROV_STOPPED as if it were success would make the device
+   *          unprovisionable until reflashed.
    */
   esp_err_t ble_provisioning_stop(void);
 

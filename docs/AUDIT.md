@@ -101,7 +101,7 @@ network is normal operation, never a stuck state.
 | [x] | 🟡  | `bsp_buttons.c`                        | `xQueueCreate` / `xTaskCreatePinnedToCore` returns unchecked.                                                                                                                                                                                                                                                                                                                                                                        |
 | [x] | 🟡  | `wifi_manager.c`                       | Dead `BIT_FAIL` bit (never set, present in four clear masks); redundant clear in CONNECTED; missing `default:` in the state switch; overstated "aborting scan" comment.                                                                                                                                                                                                                                                              |
 | [x] | 🟡  | `app_handlers.c` `BLE_PROV_FAILED`     | No user-visible feedback; now re-shows the QR.                                                                                                                                                                                                                                                                                                                                                                                       |
-| [~] | 🟡  | `ble_provisioning.c:165`               | `NETWORK_PROV_END` reports **every** stop as `BLE_PROV_SUCCESS`, and that path releases 110 KB of BT RAM permanently. Not reachable today — `ble_provisioning_stop()` has exactly one call site, inside the success handler itself. Left as-is; the trap is documented in `ble_provisioning.h` for whoever adds a Cancel.                                                                                                            |
+| [x] | 🟡  | `ble_provisioning.c:165`               | `NETWORK_PROV_END` reports **every** stop as `BLE_PROV_SUCCESS`, and that path releases 110 KB of BT RAM permanently. Was unreachable while `ble_provisioning_stop()` had a single call site inside the success handler — **PR #19 added the cancel that reaches it**, so the outcome is now latched from `NETWORK_PROV_WIFI_CRED_SUCCESS` and a cancel reports the new `BLE_PROV_STOPPED`. Exactly the fix the header comment prescribed. |
 | [ ] | 🟡  | `app_handlers.c` `do_reset_wifi`       | Still runs inline on the sole `buttons` task, blocking it for up to 6s + NVS erase + SRP. `held_ms` is a software counter so long/emergency thresholds skew, presses during the stall are drained and lost, and the two-button sleep combo cannot fire. Needs a worker task → **Phase 4**.                                                                                                                                           |
 | [ ] | 🟡  | `wifi_manager.c:321`                   | `fire_event()` runs on the wifi task and takes `lvgl_port_lock(0)` (`portMAX_DELAY`) — an unbounded block inside `try_connect_candidate`, outside every `STOP_TIMEOUT_MS` calculation. → **Phase 4**.                                                                                                                                                                                                                                |
 
@@ -127,11 +127,38 @@ violate the standing requirement that the device keep working with no WiFi.
 
 ## Phase 4 — Power / UX / flash wear
 
-Split across three PRs because the risk profiles differ:
+Split across PRs because the risk profiles differ:
 
-- **4A — flash wear + abort paths** ✅ done. Mechanical, no user-visible behaviour change.
-- **4B — deep sleep.** Touches only `deep_sleep.c`; getting it wrong means the device does not wake.
-- **4C — status visibility + responsiveness.** Also closes the last `[~]` row of Phase 3.
+- **4A — flash wear + abort paths** ✅ PR #18. Mechanical, no user-visible behaviour change.
+- **4B — cancelling provisioning restores WiFi** ✅ PR #19. Found in use, not in the audit: leaving
+  the QR overlay left the device offline until reboot. Closes the `ble_provisioning.c:165` row above.
+- **4C — deep sleep.** Touches only `deep_sleep.c`; getting it wrong means the device does not wake.
+- **4D — status visibility + responsiveness.** Also closes the last `[~]` row of Phase 3.
+
+### 4B — the wedge, and what it dragged in
+
+`do_provisioning()` stops WiFi to hand the radio to `network_prov_mgr` (correct), but dismissing the
+QR only hid the overlay. Nothing restarted WiFi, and `wifi_manager_stop()` deliberately suppresses
+its failure events, so `schedule_reconnect()` never armed either — no IP, no Tailscale, until a
+reboot. Same family as the Phase 1 wedges, different entrance.
+
+Three things had to be right at once, each found by fixing the previous one:
+
+1. **Outcome must be latched.** Wiring a cancel to `ble_provisioning_stop()` reaches the
+   `NETWORK_PROV_END`-reports-everything-as-SUCCESS trap above, which would release the BT
+   controller for good.
+2. **Teardown is asynchronous.** `network_prov_mgr_stop_provisioning()` "will initiate a process to
+   stop the service and return" (`manager.h:429-434`), with a cleanup delay defaulting to 1000 ms —
+   measured at **1.2 s** on device. Calling `network_prov_mgr_deinit()` + `free_sec2_credentials()`
+   inside that window handed protocomm's shallow copy of the SRP salt/verifier back to the
+   allocator and panicked the device a second later. All teardown now happens in the END handler,
+   and WiFi restarts from `BLE_PROV_STOPPED`, not from the button task.
+3. **`is_active()` must report false the moment a stop is requested**, or re-entering during the
+   1.2 s window takes the "just re-show the QR" branch against a manager that is tearing itself down.
+
+Also suppressed `NETWORK_PROV_WIFI_CRED_FAIL` while a deliberate stop is in flight — the app answers
+it by erasing the stored credential and re-showing the QR. **Not confirmed to have fired**; the
+guard mirrors `wifi_manager`'s `stop_requested()` and is cheap either way.
 
 |     | Sev | Where                                                                              | Issue                                                                                                                                                                                                                                                                 |
 |-----|-----|------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
