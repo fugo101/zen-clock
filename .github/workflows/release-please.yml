@@ -60,13 +60,30 @@ jobs:
       - name: Rename artifacts with version
         run: |
           VERSION="${{ needs.release-please.outputs.version }}"
-          cp .pio/build/lilygo-t-display-s3/firmware.bin "firmware-${VERSION}.bin"
+          cp .pio/build/lilygo-t-display-s3/bootloader.bin "bootloader-${VERSION}.bin"
           cp .pio/build/lilygo-t-display-s3/partitions.bin "partitions-${VERSION}.bin"
+          cp .pio/build/lilygo-t-display-s3/ota_data_initial.bin "ota_data_initial-${VERSION}.bin"
+          cp .pio/build/lilygo-t-display-s3/firmware.bin "firmware-${VERSION}.bin"
+          sha256sum "bootloader-${VERSION}.bin" "partitions-${VERSION}.bin" \
+            "ota_data_initial-${VERSION}.bin" "firmware-${VERSION}.bin" > "checksums-${VERSION}.txt"
 
       - name: Create GitHub Release with firmware
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
+          body: |
+            Flash a blank board (offsets from `pio run -t upload -v`, esp32s3, 16MB flash):
+            ```
+            esptool.py --chip esp32s3 write_flash -z --flash_mode dio --flash_freq 80m --flash_size 16MB \
+              0x0     bootloader-${{ needs.release-please.outputs.version }}.bin \
+              0x8000  partitions-${{ needs.release-please.outputs.version }}.bin \
+              0xe000  ota_data_initial-${{ needs.release-please.outputs.version }}.bin \
+              0x10000 firmware-${{ needs.release-please.outputs.version }}.bin
+            ```
+            Verify downloads: `sha256sum -c checksums-${{ needs.release-please.outputs.version }}.txt`
           files: |
-            firmware-*.bin
+            bootloader-*.bin
             partitions-*.bin
+            ota_data_initial-*.bin
+            firmware-*.bin
+            checksums-*.txt

@@ -125,6 +125,11 @@ pio run -t upload
 pio device monitor
 ```
 
+Flashing a blank board without a PlatformIO checkout (no bootloader on it yet)? Each
+[GitHub Release](https://github.com/fugo101/zen-clock/releases) ships `bootloader.bin`,
+`partitions.bin`, `ota_data_initial.bin`, `firmware.bin`, a checksum file, and the exact
+`esptool.py` command with offsets in the release notes.
+
 ### First Boot
 
 **On first boot (no WiFi credentials in NVS):**
