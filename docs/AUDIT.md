@@ -7,6 +7,17 @@ Severity: 🔴 critical · 🟠 high · 🟡 medium · ⚪ low
 
 **Status legend:** `[ ]` open · `[x]` done · `[~]` partially done · `[-]` won't fix (reason inline)
 
+**Closeout review (2026-08-13):** re-scanned this file end to end against PR #14-#34, all merged.
+Zero `[ ]` rows remain. Tally (leading marker per row, not counting the many rows that also discuss
+other markers in their prose): 76 `[x]` · 9 `[~]` · 6 `[-]`. The `[~]` rows are the honest
+remainder — code-reviewed but not yet exercised on real hardware. In order of severity:
+`ble_provisioning.c:126` (🔴 the plaintext-password-leak fix — the actual repro, a 32-char hotspot
+SSID provisioned over BLE, has never been run) · `wifi_manager.c:332,341` (password clamp) ·
+`status_bar.c:103-104` + `device_info_screen.c:236` (single-conversion ADC merge) ·
+`deep_sleep.c:27-36` (sleep current never measured) · `bsp_battery.c` + `status_bar.c:99`
+(low-battery clamp never exercised) · plus all of PR #21 (NTP backoff after a failed sync, the
+yellow "no internet" / red "NTP failed" icons) — none of it has run on a device yet.
+
 ---
 
 ## Phase 0 — Tracking doc, credential leak, provenance ✅ done
@@ -131,7 +142,7 @@ violate the standing requirement that the device keep working with no WiFi. The 
 
 ---
 
-## Phase 4 — Power / UX / flash wear
+## Phase 4 — Power / UX / flash wear ✅ done
 
 Split across PRs because the risk profiles differ:
 
@@ -207,11 +218,11 @@ guard mirrors `wifi_manager`'s `stop_requested()` and is cheap either way.
 
 ---
 
-## Phase 5 — CI gates & build config
+## Phase 5 — CI gates & build config ✅ done
 
 |     | Sev | Where                          | Issue                                                                                                                                                                                                     |
 |-----|-----|--------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| [~] | 🟠  | `.github/workflows/ci.yml`     | Only step of substance is `pio run`. No format check, no `pio check`, no tests, no lock/sdkconfig drift check — despite `.clang-format`, `.clang-tidy`, `format.sh` and `scripts/format.py` all existing. **Phase 5A**: added `check_secrets.py`, `format.py --check`, and `pio check` (via `scripts/pio_check.py`) to `ci.yml`. **Phase 5B**: added a `dependencies.lock` drift check — the build step already regenerates it if a manifest changed without a matching commit, so the new step just diffs it. Still open: no tests (Phase 5D) — hence `[~]`, not `[x]`. |
+| [x] | 🟠  | `.github/workflows/ci.yml`     | Only step of substance is `pio run`. No format check, no `pio check`, no tests, no lock/sdkconfig drift check — despite `.clang-format`, `.clang-tidy`, `format.sh` and `scripts/format.py` all existing. **Phase 5A**: added `check_secrets.py`, `format.py --check`, and `pio check` (via `scripts/pio_check.py`) to `ci.yml`. **Phase 5B**: added a `dependencies.lock` drift check — the build step already regenerates it if a manifest changed without a matching commit, so the new step just diffs it. **Phase 5D**: added `pio test -e native`, wired before the build step. **sdkconfig drift — deliberately won't-fix**: `sdkconfig.lilygo-t-display-s3` is a confgen-generated artifact rewritten on every build, and Phase 0 already proved confgen strips hand-edited comments on the very next `pio run` — unlike `dependencies.lock`'s stable `manifest_hash` contract, there's no verified-stable diff target here, so a `git diff --exit-code sdkconfig.*` gate risks failing CI on churn that isn't a real regression; not evaluated further, just declined rather than shipped untested. The credential-leak risk that motivated it is already covered by `check_secrets.py` at the top of the job. |
 | [x] | 🟠  | `ci.yml`                       | Wire in `scripts/check_secrets.py` (from Phase 0) so a leaked key fails CI, not just a local hook. **Phase 5A**: added as the first step, before build, so a leak fails fast.                             |
 | [x] | 🟡  | `ci.yml:14`                    | `if: ... head.repo.fork == false` makes fork PRs **skip**, and GitHub counts a skipped required check as passing → fork PRs merge unverified. **Phase 5A**: removed the `if:`. Verified via `gh api repos/fugo101/zen-clock/actions/permissions/fork-pr-contributor-approval` that the repo already requires manual approval for a first-time contributor's fork PR at the platform level — that guard, not the workflow-level skip, is what should gate the self-hosted runner; the skip only fought it and created the pass-without-running gap. |
 | [x] | 🟡  | `ci.yml`                       | No `timeout-minutes` (defaults to 360) and no `concurrency` group on the single self-hosted runner. **Phase 5A**: added `timeout-minutes: 20` and a `concurrency` group (`cancel-in-progress: true`), matching the pattern already used in `release-please.yml`.                                       |
