@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "settings.h"
+#include "timezone_fmt.h"
 #include <esp_log.h>
 #include <nvs_flash.h>
 #include <nvs.h>
@@ -311,7 +312,7 @@ void settings_set_timezone_offset(int8_t offset)
 void settings_apply_timezone(int8_t offset)
 {
   char tz[12];
-  snprintf(tz, sizeof(tz), "UTC%s%d", offset > 0 ? "-" : "+", abs((int) offset));
+  timezone_fmt(tz, sizeof(tz), offset);
   setenv("TZ", tz, 1);
   tzset();
 }
