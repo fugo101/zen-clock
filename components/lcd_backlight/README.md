@@ -41,8 +41,6 @@ Include the header in your C files:
     * Sets brightness by percentage (0 - 100%). `fade_time_ms` > 0 will animate the transition.
 * `uint8_t lcd_backlight_get_brightness(lcd_backlight_handle_t handle);`
     * Returns current brightness (0-100%).
-* `esp_err_t lcd_backlight_deinit(lcd_backlight_handle_t handle);`
-    * Stops fading, disables the timer, and frees resources.
 
 ## 3. Usage Example (for AI and Humans)
 

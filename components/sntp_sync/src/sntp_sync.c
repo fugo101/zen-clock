@@ -285,32 +285,7 @@ void sntp_sync_force_resync(void)
   xEventGroupSetBits(s_eg, SNTP_BIT_RESYNC);
 }
 
-bool sntp_sync_is_synced(void)
-{
-  return s_synced;
-}
-
 time_t sntp_sync_get_last_sync_time(void)
 {
   return s_last_sync_rtc;
-}
-
-void sntp_sync_stop(void)
-{
-  // Delete the persistent task first
-  if (s_sntp_task)
-  {
-    vTaskDelete(s_sntp_task);
-    s_sntp_task = NULL;
-  }
-
-  if (s_eg)
-  {
-    vEventGroupDelete(s_eg);
-    s_eg = NULL;
-  }
-
-  esp_netif_sntp_deinit();
-  s_synced = false;
-  ESP_LOGI(tag, "SNTP client stopped");
 }

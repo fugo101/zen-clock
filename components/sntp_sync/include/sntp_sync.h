@@ -43,16 +43,6 @@ extern "C"
   esp_err_t sntp_sync_start(sntp_sync_cb_t on_sync);
 
   /**
-   * @brief Check if time has been synchronized.
-   */
-  bool sntp_sync_is_synced(void);
-
-  /**
-   * @brief Stop SNTP client and free resources.
-   */
-  void sntp_sync_stop(void);
-
-  /**
    * @brief Notify SNTP that WiFi just reconnected.
    *
    * If last sync is stale (>1h) or has never occurred, wakes the

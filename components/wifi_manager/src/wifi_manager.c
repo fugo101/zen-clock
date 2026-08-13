@@ -803,11 +803,6 @@ esp_err_t wifi_manager_start(void)
   return ESP_OK;
 }
 
-bool wifi_manager_is_connected(void)
-{
-  return get_state() == WIFI_ST_CONNECTED;
-}
-
 esp_err_t wifi_manager_stop(void)
 {
   ESP_LOGI(tag, "Stopping WiFi...");
@@ -846,11 +841,6 @@ esp_err_t wifi_manager_stop(void)
 void wifi_manager_set_callback(wifi_event_cb_t cb)
 {
   s_callback = cb;
-}
-
-wifi_state_t wifi_manager_get_state(void)
-{
-  return get_state();
 }
 
 const char *wifi_manager_get_ssid(void)

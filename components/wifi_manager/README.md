@@ -91,37 +91,25 @@ wifi_manager/
  * Creates netif, initializes WiFi driver, creates persistent task.
  * Call once at startup.
  */
-void wifi_manager_init(void);
+esp_err_t wifi_manager_init(void);
 
 /**
  * @brief Start WiFi connection process.
  * Loads credentials → scans → connects → verifies (blocks task, not caller).
  * Returns immediately; use callback for state updates.
  */
-void wifi_manager_start(void);
+esp_err_t wifi_manager_start(void);
 
 /**
  * @brief Stop WiFi and return task to IDLE.
  * Disconnects immediately; fires WIFI_MGR_DISCONNECTED event.
  */
-void wifi_manager_stop(void);
+esp_err_t wifi_manager_stop(void);
 ```
 
-### State & Status Queries
+### Status Queries
 
 ```c
-/**
- * @brief Get current WiFi Manager state.
- * @return wifi_mgr_state_t — current state (IDLE, SCANNING, CONNECTING, etc.)
- */
-wifi_mgr_state_t wifi_manager_get_state(void);
-
-/**
- * @brief Check if WiFi is fully connected and internet verified.
- * @return true only when state == CONNECTED
- */
-bool wifi_manager_is_connected(void);
-
 /**
  * @brief Get connected SSID.
  * @return Pointer to SSID string, or empty string if not connected.
