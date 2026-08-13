@@ -63,6 +63,17 @@ jobs:
             exit 1
           fi
 
+      - name: Configure PlatformIO build cache
+        # Same cache as ci.yml's build job — see the comment there for why the namespace is hashed
+        # rather than a flat dir (SCons's build signature doesn't see flags carried via response
+        # files, so an sdkconfig change alone wouldn't otherwise bust the cache).
+        run: |
+          KEY="${{ hashFiles('sdkconfig.lilygo-t-display-s3', 'platformio.ini', 'dependencies.lock') }}"
+          DIR="$HOME/.cache/zen-clock/pio-build-cache/$KEY"
+          mkdir -p "$DIR"
+          echo "PLATFORMIO_BUILD_CACHE_DIR=$DIR" >> "$GITHUB_ENV"
+          echo "Build cache namespace: $KEY"
+
       - name: Build firmware
         run: pio run -e lilygo-t-display-s3
 
@@ -96,3 +107,12 @@ jobs:
             ota_data_initial-*.bin
             firmware-*.bin
             checksums-*.txt
+
+      - name: Prune build cache
+        if: always()
+        run: |
+          ROOT="$HOME/.cache/zen-clock/pio-build-cache"
+          [ -d "$ROOT" ] || exit 0
+          find "$ROOT" -type f -atime +14 -delete
+          find "$ROOT" -mindepth 1 -type d -empty -delete
+          echo "Build cache size: $(du -sh "$ROOT" | cut -f1)"

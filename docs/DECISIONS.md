@@ -390,6 +390,57 @@ uses native USB-CDC, so **every reset re-enumerates the port** and a plain `cat`
 silently — it looks like "nothing happened" rather than "capture broke". Use a self-healing loop that
 re-attaches, and verify data is still arriving before trusting a quiet log.
 
+**CI's `Build firmware` step was ~9 minutes and dominated the job (94% of total CI time), even
+though the self-hosted runner's workspace persists between runs.** `actions/checkout` defaults to
+`clean: true`, i.e. `git clean -ffdx`, and `.pio/` (285 MB) plus `managed_components/` (184 MB) are
+both gitignored — so every run started from zero and rebuilt all ~2200 objects (only ~30 are project
+code; the rest is ESP-IDF/LVGL/mbedTLS/BT, unchanged run to run). Fixed by pointing
+`PLATFORMIO_BUILD_CACHE_DIR` at a directory in the runner's `$HOME`, outside the workspace `git
+clean` touches. This works because PlatformIO/espidf compiles every source through **SCons**, not
+ninja — cmake only configures (`get_cmake_code_model()`), ninja only runs for `menuconfig` — so
+SCons's built-in `CacheDir` (content-addressed, no external tool needed) covers the whole build,
+bootloader included. Verified locally: cold build 89s, cache-retrieved rebuild 5.9s, bit-identical
+`firmware.bin` sha256.
+
+**The cache namespace is hashed, not a flat directory — this is load-bearing, not decoration.**
+ESP-IDF 6.x's espidf.py passes compiler flags to SCons via response files
+(`@.../toolchain/cflags`), and `process_response_file()` appends the file's *path* to `CFLAGS`, not
+its contents. SCons computes the build signature from the command line, so it cannot see a flag
+change (e.g. an optimization-level edit in `sdkconfig`) that leaves the response-file path
+unchanged — a bare cache would silently serve objects built with stale flags. CI namespaces the
+cache dir by `hashFiles(sdkconfig.lilygo-t-display-s3, platformio.ini, dependencies.lock)`, so any
+change to those falls through to one fresh cold build in a new namespace instead of a wrong cache
+hit. `platformio.ini` itself is untouched — the cache is CI-only, via `PLATFORMIO_BUILD_CACHE_DIR`,
+so a dev machine's `idf.py menuconfig` churn can't produce a stale local cache.
+
+**SCons's `CacheDir` (pinned via `tool-scons` 4.8.1) has no eviction — it only grows.** Each
+sdkconfig/platformio.ini/dependencies.lock combination is a new ~285 MB namespace. `CacheRetrieveFunc`
+calls `os.utime()` on every cache hit, an explicit syscall unaffected by `relatime`, so `find
+-atime +14 -delete` in the CI job's prune step is a reliable "still in use" signal, not a guess.
+
+**`actions/cache` was considered and rejected as the primary mechanism.** It's the right tool for a
+GitHub-hosted runner, but this repo's single self-hosted runner already has a persistent `$HOME` —
+reading the cache from local disk costs nothing, while `actions/cache` would ship several hundred MB
+over the internet on every run to buy resilience against a runner rebuild, which only costs one cold
+build anyway. Revisit if this repo ever moves to GitHub-hosted runners.
+
+**Docs-only PRs skip the build/test/analyze steps, but the job itself never skips.** The `Build,
+Test & Analyze` job name is the required-status-check contract (see below) — a `paths-ignore` at the
+workflow level would skip the whole job and the check would never report, blocking every PR
+indefinitely. Instead, an in-job `Detect build-relevant changes` step diffs against the PR base (or
+`github.event.before` on push) with an inverted, fail-safe allow-list: only `docs/`, `README.md`,
+`CLAUDE.md`, `CHANGELOG.md`, `THIRD_PARTY.md`, `LICENSE`, and editor-config dirs are considered
+inert. Any file not on that list — including a file or directory never seen before — forces a full
+build. `version.txt`, `dependencies.lock`, and `sdkconfig.*` are deliberately not on the list, so a
+Release Please PR still gets a full build.
+
+> ⚠️ **`is_cmake_reconfigure_required()` in the espidf builder only watches the root and `src/`
+> `CMakeLists.txt`, not `components/*/CMakeLists.txt`.** Since ninja never runs a build (see above),
+> nothing else forces a reconfigure either — adding a source file to a component's `CMakeLists.txt`
+> can silently not get compiled until something else dirties the build dir (edit `src/CMakeLists.txt`,
+> or `rm -rf .pio/build`). Not something this cache change introduced — CI already deletes `.pio/build`
+> every run so it always reconfigures — but a real trap on a dev machine with a persistent build dir.
+
 ---
 
 ## Repo & third-party

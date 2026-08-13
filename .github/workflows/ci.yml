@@ -30,6 +30,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
+          fetch-depth: 0 # need history for the build-relevant-changes diff below; repo is 2.6M, cheap
 
       - name: Setup PlatformIO PATH
         run: echo "$HOME/.platformio/penv/bin" >> $GITHUB_PATH
@@ -54,15 +55,66 @@ jobs:
       - name: Check formatting
         run: python3 scripts/format.py --check
 
+      - name: Detect build-relevant changes
+        id: changes
+        # `actions/checkout`'s `git clean -ffdx` wipes .pio/ every run (it's gitignored, so a
+        # persistent self-hosted workspace doesn't help), which forces a full rebuild even for a
+        # docs-only PR. This gate skips the expensive steps in that case WITHOUT skipping the job —
+        # `Build, Test & Analyze` is the required-status-check name, and a skipped job still reports
+        # as skipped=success, so the check keeps landing. Do not switch this to workflow-level
+        # `paths-ignore`: that skips the whole job, the required check never reports, and every PR
+        # blocks forever (see the fork-PR guard note above for the same failure mode).
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          if ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "Base commit not resolvable (new branch / force-push) — building to be safe."
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BASE" HEAD)
+          echo "$CHANGED"
+          # Inverted allow-list, fail-safe: only skip when EVERY changed file is in the known-inert
+          # set. Any file or directory not matched here — including anything new — forces a build.
+          if echo "$CHANGED" | grep -qvE '^(docs/|\.claude/|\.run/|\.idea/|README\.md|CLAUDE\.md|CHANGELOG\.md|THIRD_PARTY\.md|LICENSE)'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Docs-only change — skipping build/test/analyze."
+          fi
+
+      - name: Configure PlatformIO build cache
+        if: steps.changes.outputs.code == 'true'
+        # SCons (which PlatformIO/espidf use for every object, not ninja — ninja only runs for
+        # `menuconfig`) hashes the build signature from the COMMAND LINE, but ESP-IDF 6.x passes
+        # flags via response files (`@.../toolchain/cflags`) that espidf.py appends by PATH, not by
+        # content (see process_response_file() in the espidf builder). So the signature is blind to
+        # flag changes: an sdkconfig edit alone would not bust the cache. Namespacing the cache dir
+        # by a hash of everything that can change those flags makes a config change fall through to
+        # a fresh (one-time) cold build instead of silently serving stale objects. Verified locally:
+        # cold build 89s / cache-retrieved rebuild 5.9s, bit-identical firmware.bin sha256.
+        run: |
+          KEY="${{ hashFiles('sdkconfig.lilygo-t-display-s3', 'platformio.ini', 'dependencies.lock') }}"
+          DIR="$HOME/.cache/zen-clock/pio-build-cache/$KEY"
+          mkdir -p "$DIR"
+          echo "PLATFORMIO_BUILD_CACHE_DIR=$DIR" >> "$GITHUB_ENV"
+          echo "Build cache namespace: $KEY"
+
       - name: Run native unit tests
+        if: steps.changes.outputs.code == 'true'
         run: pio test -e native
 
       - name: Build firmware
+        if: steps.changes.outputs.code == 'true'
         run: pio run -e lilygo-t-display-s3
 
       - name: Check dependencies.lock is up to date
         # The build above regenerates dependencies.lock if it doesn't match the manifests it was
         # resolved from — so a diff here means a manifest changed without committing the result.
+        if: steps.changes.outputs.code == 'true'
         run: |
           if ! git diff --exit-code dependencies.lock; then
             echo "::error::dependencies.lock is stale — a manifest changed without regenerating it."
@@ -71,9 +123,11 @@ jobs:
           fi
 
       - name: Static analysis (pio check)
+        if: steps.changes.outputs.code == 'true'
         run: python3 scripts/pio_check.py
 
       - name: Upload build artifact
+        if: steps.changes.outputs.code == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: firmware-${{ github.sha }}
@@ -81,3 +135,17 @@ jobs:
             .pio/build/lilygo-t-display-s3/firmware.bin
             .pio/build/lilygo-t-display-s3/partitions.bin
           retention-days: 7
+
+      - name: Prune build cache
+        if: always()
+        # SCons's CacheDir has no eviction/max_size (verified: no such option in this repo's pinned
+        # scons-local-4.8.1), so each sdkconfig/platformio.ini/dependencies.lock combination adds a
+        # namespace (~285 MB) that otherwise only grows. CacheRetrieveFunc calls os.utime() on every
+        # hit, so atime is a reliable "still in use" signal — unaffected by relatime, since it's an
+        # explicit syscall, not a passive read.
+        run: |
+          ROOT="$HOME/.cache/zen-clock/pio-build-cache"
+          [ -d "$ROOT" ] || exit 0
+          find "$ROOT" -type f -atime +14 -delete
+          find "$ROOT" -mindepth 1 -type d -empty -delete
+          echo "Build cache size: $(du -sh "$ROOT" | cut -f1)"
