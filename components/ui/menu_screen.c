@@ -97,6 +97,18 @@ void menu_screen_create(lv_obj_t *parent)
   update_focus_visual();
 }
 
+void menu_screen_destroy(void)
+{
+  // Deliberately does NOT reset s_focus — nav.c owns persisting/restoring it across screen
+  // switches via s_menu_focus, and calls menu_screen_set_focus() right after every
+  // show_menu_screen(). Clearing it here would race with that restore.
+  for (int i = 0; i < (int) MENU_ITEM_COUNT; i++)
+  {
+    s_item_labels[i] = NULL;
+  }
+  s_focus_marker = NULL;
+}
+
 void menu_screen_focus_prev(void)
 {
   s_focus = ui_circ_prev(s_focus, (int) MENU_ITEM_COUNT);
