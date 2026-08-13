@@ -65,6 +65,18 @@ extern "C"
    */
   bool bsp_battery_usb_connected(void);
 
+  /**
+   * @brief Read voltage, percentage and USB status from a single ADC conversion.
+   *
+   * bsp_battery_get_voltage/_get_percentage/_usb_connected() each trigger their own fresh ADC
+   * conversion; calling more than one per refresh both wastes conversions and — because C leaves
+   * argument evaluation order unspecified — can print a percentage and a voltage that came from
+   * two different samples and disagree with each other. Use this instead when more than one of
+   * the three values is needed at once. Any out pointer may be NULL. On ADC failure, *mv and *pct
+   * are set to -1 and *usb to false, matching the individual getters' failure behavior.
+   */
+  void bsp_battery_read(int *mv, int *pct, bool *usb);
+
   // ============================================================
   // Button Input
   // ============================================================

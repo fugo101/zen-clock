@@ -36,6 +36,22 @@ static float volts_to_percentage(float volts)
   return 123.0f - (123.0f / powf((1.0f + powf(volts / 3.7f, 80.0f)), 0.165f));
 }
 
+// Shared by bsp_battery_get_percentage() and bsp_battery_read() so the two never disagree.
+static int percentage_from_mv(int mv)
+{
+  float pct = volts_to_percentage((float) mv / 1000.0f);
+  int result = (int) ceilf(pct);
+  if (result < 0)
+  {
+    result = 0;
+  }
+  if (result > 100)
+  {
+    result = 100;
+  }
+  return result;
+}
+
 // ============================================================
 // Init (called from bsp_display.c during bsp_display_init)
 // ============================================================
@@ -133,17 +149,7 @@ int bsp_battery_get_percentage(void)
   {
     return -1;
   }
-  float pct = volts_to_percentage((float) mv / 1000.0f);
-  int result = (int) ceilf(pct);
-  if (result < 0)
-  {
-    result = 0;
-  }
-  if (result > 100)
-  {
-    result = 100;
-  }
-  return result;
+  return percentage_from_mv(mv);
 }
 
 bool bsp_battery_usb_connected(void)
@@ -154,4 +160,21 @@ bool bsp_battery_usb_connected(void)
     return false;
   }
   return mv >= USB_THRESHOLD_MV;
+}
+
+void bsp_battery_read(int *mv, int *pct, bool *usb)
+{
+  const int reading = bsp_battery_get_voltage(); // single ADC conversion for all three outputs
+  if (mv)
+  {
+    *mv = reading;
+  }
+  if (pct)
+  {
+    *pct = reading < 0 ? -1 : percentage_from_mv(reading);
+  }
+  if (usb)
+  {
+    *usb = reading >= 0 && reading >= USB_THRESHOLD_MV;
+  }
 }
