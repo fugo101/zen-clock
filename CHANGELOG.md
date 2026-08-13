@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.0](https://github.com/fugo101/zen-clock/compare/v0.2.3...v0.3.0) (2026-08-13)
+
+
+### Features
+
+* **deep-sleep:** make sleep cancellable and cut the LCD rail ([#20](https://github.com/fugo101/zen-clock/issues/20)) ([4158b2a](https://github.com/fugo101/zen-clock/commit/4158b2a149dd3fe0e127d8109a51a6ea1314b70f))
+* **power:** warn on low battery, move heavy nav actions off the button task ([#22](https://github.com/fugo101/zen-clock/issues/22)) ([a395c24](https://github.com/fugo101/zen-clock/commit/a395c24d6023cd14905bfd26ef53ee26174df366))
+
+
+### Bug Fixes
+
+* **critical:** repair WiFi stop/start wedge, provisioning UAF and BLE teardown ([#15](https://github.com/fugo101/zen-clock/issues/15)) ([51c0972](https://github.com/fugo101/zen-clock/commit/51c0972846c83fd01f9a50950323ba3f8ab9da81))
+* **deps:** upgrade esp_lvgl_port to 2.9.0, pin platform, bump checkout ([#11](https://github.com/fugo101/zen-clock/issues/11)) ([c504b9d](https://github.com/fugo101/zen-clock/commit/c504b9df9e0aaf99d00e966cb4f57fa6aeadb291))
+* **provisioning:** restore WiFi when the QR overlay is dismissed ([#19](https://github.com/fugo101/zen-clock/issues/19)) ([2514b0e](https://github.com/fugo101/zen-clock/commit/2514b0eda411a247ac5e5c7c218f7df72edec1b4))
+* **robustness:** coalesce NVS writes, stop aborting on recoverable errors ([#18](https://github.com/fugo101/zen-clock/issues/18)) ([a358b88](https://github.com/fugo101/zen-clock/commit/a358b8815e0144628eebc72ddf3edb5ba61f583e))
+* **security:** stop plaintext password leak via unterminated SSID cast ([#29](https://github.com/fugo101/zen-clock/issues/29)) ([b1d9575](https://github.com/fugo101/zen-clock/commit/b1d95753d9f84472bef688766c62cc97e7bb3d4e))
+* **ui:** read firmware version from app descriptor instead of hardcoded literal ([#13](https://github.com/fugo101/zen-clock/issues/13)) ([d51068a](https://github.com/fugo101/zen-clock/commit/d51068a417db30a44d115c3eba6b3b8c3a7f0feb))
+* **ui:** run nav action callbacks outside the LVGL lock ([#16](https://github.com/fugo101/zen-clock/issues/16)) ([a89a066](https://github.com/fugo101/zen-clock/commit/a89a066f871d4974a7492cba329a708ea6547f4f))
+* **ui:** show when the clock is wrong, and stop waiting an hour to fix it ([#21](https://github.com/fugo101/zen-clock/issues/21)) ([e48301e](https://github.com/fugo101/zen-clock/commit/e48301e4c1dd0c988e02a8b3ca2464314e89acc9))
+* **wifi:** bound the LVGL lock inside on_wifi_event ([#24](https://github.com/fugo101/zen-clock/issues/24)) ([8ac47d3](https://github.com/fugo101/zen-clock/commit/8ac47d3e3406e8a857b3697a9443892f68b6ff8e))
+* **wifi:** keep the clock alive offline, close a race PR [#15](https://github.com/fugo101/zen-clock/issues/15) introduced ([#17](https://github.com/fugo101/zen-clock/issues/17)) ([1762f68](https://github.com/fugo101/zen-clock/commit/1762f68d62fd45a98a6a41aa55e8b7d6174543ef))
+
 ## [0.2.3](https://github.com/fugo101/zen-clock/compare/v0.2.2...v0.2.3) (2026-05-21)
 
 
