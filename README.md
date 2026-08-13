@@ -129,10 +129,39 @@ pio run -t upload
 pio device monitor
 ```
 
-Flashing a blank board without a PlatformIO checkout (no bootloader on it yet)? Each
-[GitHub Release](https://github.com/fugo101/zen-clock/releases) ships `bootloader.bin`,
-`partitions.bin`, `ota_data_initial.bin`, `firmware.bin`, a checksum file, and the exact
-`esptool.py` command with offsets in the release notes.
+### Install from a Release (no PlatformIO required)
+
+Just want to flash a board without building from source? Every
+[GitHub Release](https://github.com/fugo101/zen-clock/releases) ships four binaries, a checksum
+file, and the exact flash command for that version — for example
+[v0.3.0](https://github.com/fugo101/zen-clock/releases/tag/v0.3.0).
+
+1. **Install esptool** (one-time):
+   ```bash
+   pip install esptool
+   ```
+2. **Download** the release's 5 assets — `bootloader-<version>.bin`, `partitions-<version>.bin`,
+   `ota_data_initial-<version>.bin`, `firmware-<version>.bin`, `checksums-<version>.txt` — from its
+   Assets section, into one folder.
+3. **Verify the download** (optional but recommended):
+   ```bash
+   sha256sum -c checksums-<version>.txt
+   ```
+4. **Connect the board over USB**, then flash all four images in one command (offsets are fixed —
+   copy this verbatim, only the version in the filenames changes per release):
+   ```bash
+   esptool.py --chip esp32s3 write_flash -z --flash_mode dio --flash_freq 80m --flash_size 16MB \
+     0x0     bootloader-<version>.bin \
+     0x8000  partitions-<version>.bin \
+     0xe000  ota_data_initial-<version>.bin \
+     0x10000 firmware-<version>.bin
+   ```
+5. **Watch it boot** — `esptool.py` resets the board automatically once flashing finishes. To see
+   serial output at 115200 baud: `python3 -m serial.tools.miniterm <port> 115200` (installed
+   alongside `esptool` via `pyserial`), or `pio device monitor` if you have PlatformIO.
+
+This works on a completely blank board — the bootloader and partition table are included, so there's
+no PlatformIO project or prior flash required.
 
 ### Development
 
