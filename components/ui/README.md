@@ -35,6 +35,11 @@ ui/
 ├── menu_screen.h / menu_screen.c         ← Menu screen
 ├── settings_screen.h / settings_screen.c ← Settings screen with inline edit
 ├── device_info_screen.h / device_info_screen.c ← System Info (12 rows, scrollable)
+├── ui_list.h / ui_list.c                 ← Shared LVGL scroll/timer helpers + layout constants
+│                                            (kept out of ui_utils.h — see below)
+├── ui_utils.h / ui_utils.c               ← Pure helpers (fmt_bytes, ui_circ_next/prev) — no LVGL,
+│                                            no ESP-IDF; symlinked into test/test_pure_logic/'s
+│                                            host-side Unity tests, so nothing here may include LVGL
 ├── fonts/
 │   ├── DS-DIGIT.TTF                      ← DS-Digital source font (7-segment style)
 │   ├── DS-DIGI.TTF / DS-DIGIB.TTF / DS-DIGII.TTF ← other weights (unused)
@@ -193,8 +198,12 @@ device sits here indefinitely and must stay usable as a clock, so this is a dism
 
 ### `menu_screen.h`
 
+Row order is `menu_row_t` (`MENU_ROW_SETTINGS`, `MENU_ROW_DEVICE_INFO`) — the single source of
+truth `nav.c` compares focus against, instead of raw `0`/`1` literals.
+
 ```c
 void menu_screen_create(lv_obj_t *parent);
+void menu_screen_destroy(void);      // nulls widgets; deliberately does NOT reset focus — nav.c owns that
 void menu_screen_focus_prev(void);   // stops at first item
 void menu_screen_focus_next(void);   // stops at last item
 int  menu_screen_get_focus(void);
@@ -219,8 +228,12 @@ Refresh: static on create (Chip/Firmware/MAC/Total Heap) · 1s (Uptime) · 10s (
 
 ### `settings_screen.h`
 
+Row order is `settings_row_t` (16 enumerators — 4 section headers + 12 items, `SETTINGS_ROW_COUNT`
+doubles as the array bound) — the single source of truth every index-based lookup uses.
+
 ```c
 void settings_screen_create(lv_obj_t *parent);
+void settings_screen_destroy(void);  // flushes any pending debounced NVS write, then nulls widgets
 void settings_screen_focus_prev(void);
 void settings_screen_focus_next(void);
 int  settings_screen_get_focus(void);
@@ -242,8 +255,8 @@ Clock screen
                                                ├─ SELECT:  enter Settings or System Info
                                                └─ BACK:    → Clock screen
 
-Settings screen (16 items with 4 section headers, scrollable — 5 visible at a time)
-  Items: Theme, Brightness | Time Format, Show Seconds, Timezone | Sleep H/M/S, Sleep Now | NTP Resync, Reset WiFi, Provisioning
+Settings screen (16 rows = 4 section headers + 12 items, scrollable — 5 visible at a time)
+  Row order: see `settings_row_t` in settings_screen.h — the source of truth, not restated here
   ├─ UP/DOWN: navigate items (section headers are skipped automatically)
   ├─ SELECT:  enter edit mode (TOGGLE/RANGE) or execute action (ACTION items)
   └─ BACK:    → Menu screen

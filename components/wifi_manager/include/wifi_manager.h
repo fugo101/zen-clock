@@ -40,11 +40,11 @@ extern "C"
                            // the state machine still enters CONNECTED, because the association and
                            // the IP lease are real and a LAN-only network is usable. Exists so the
                            // UI can say so instead of showing a plain "online".
-    WIFI_MGR_DISCONNECTED, // Lost connection — caller should start BLE provisioning
+    WIFI_MGR_DISCONNECTED, // Lost connection — caller should schedule a backoff reconnect (no BLE)
     WIFI_MGR_SCAN_DONE,    // WiFi scan complete
     WIFI_MGR_NO_CRED,      // No credential in NVS — caller should start BLE provisioning
-    WIFI_MGR_NO_MATCH,     // Stored AP not found in scan — caller should start BLE provisioning
-    WIFI_MGR_ALL_FAILED,   // Connection attempt failed — caller should start BLE provisioning
+    WIFI_MGR_NO_MATCH,     // Stored AP not found in scan — caller should schedule a backoff reconnect (no BLE)
+    WIFI_MGR_ALL_FAILED,   // Connection attempt failed — caller should schedule a backoff reconnect (no BLE)
   } wifi_manager_event_t;
 
   typedef void (*wifi_event_cb_t)(wifi_manager_event_t event);

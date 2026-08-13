@@ -39,23 +39,27 @@ Header: [`include/bsp.h`](include/bsp.h)
 | `void bsp_display_init(lv_disp_t **disp, bool backlight_on)`         | Initialize all hardware (I80 bus, ST7789, LVGL port, ADC, backlight, power GPIO). Call **once** from `app_main`. |
 | `void bsp_display_set_brightness(uint8_t percent, uint32_t fade_ms)` | Set backlight 0–100% with optional smooth fade (0 = instant).                                                    |
 | `uint8_t bsp_display_get_brightness(void)`                           | Get current brightness percentage.                                                                               |
+| `void bsp_display_power_off(void)`                                    | Cuts the LCD power rail and latches it via `gpio_hold_en()` — survives deep sleep and the reboot after it. Fade the backlight out *first*; this kills the panel rail outright. See `CLAUDE.md`'s "Deep Sleep: the LCD rail is latched" for the release-order gotcha. |
 
 ### Battery
 
-| Function                               | Description                                                                                      |
-|----------------------------------------|--------------------------------------------------------------------------------------------------|
-| `int bsp_battery_get_voltage(void)`    | Battery voltage in millivolts (×2 corrected for resistor divider). Returns `-1` on error.        |
-| `int bsp_battery_get_percentage(void)` | Battery level 0–100% using a curve-fitting formula (float, hardware FPU). Returns `-1` on error. |
-| `bool bsp_battery_usb_connected(void)` | `true` if voltage ≥ 4500 mV (USB power detected).                                                |
+| Function                                        | Description                                                                                      |
+|--------------------------------------------------|--------------------------------------------------------------------------------------------------|
+| `int bsp_battery_get_voltage(void)`              | Battery voltage in millivolts (×2 corrected for resistor divider). Returns `-1` on error.        |
+| `int bsp_battery_get_percentage(void)`           | Battery level 0–100% using a curve-fitting formula (float, hardware FPU). Returns `-1` on error. |
+| `bool bsp_battery_usb_connected(void)`           | `true` if voltage ≥ 4500 mV (USB power detected).                                                |
+| `void bsp_battery_read(int *mv, int *pct, bool *usb)` | One ADC conversion feeding all three values at once. Prefer this over calling the three getters above separately — each of them triggers its own fresh conversion, so two+ calls per refresh both waste conversions and (since C's argument evaluation order is unspecified) can print values from two different samples that disagree. Any output pointer may be `NULL`. |
 
 ### Buttons
 
-| Function / Type                                             | Description                                                                        |
-|-------------------------------------------------------------|------------------------------------------------------------------------------------|
-| `BSP_BTN_BOOT` (0)                                          | BOOT button identifier (GPIO0)                                                     |
-| `BSP_BTN_IO14` (1)                                          | Side button identifier (GPIO14)                                                    |
-| `typedef void (*bsp_button_cb_t)(int btn_id, bool pressed)` | Callback type: `btn_id` = `BSP_BTN_BOOT` or `BSP_BTN_IO14`, `pressed` = true/false |
-| `void bsp_buttons_init(bsp_button_cb_t callback)`           | Start button monitoring task. Calls `callback` on debounced press/release events.  |
+| Function / Type                                                    | Description                                                                                    |
+|----------------------------------------------------------------------|--------------------------------------------------------------------------------------------------|
+| `BSP_BTN_BOOT` (0)                                                  | BOOT button identifier (GPIO0)                                                                   |
+| `BSP_BTN_IO14` (1)                                                  | Side button identifier (GPIO14)                                                                  |
+| `BSP_BTN_COUNT` (2)                                                 | Number of buttons                                                                                |
+| `bsp_btn_event_t` — `BSP_BTN_SHORT` / `BSP_BTN_LONG` / `BSP_BTN_EMERGENCY` | Gesture classification, not a raw press/release: `SHORT` fires on release (< 800ms), `LONG` fires *while still held* (≥ 800ms), `EMERGENCY` fires *while still held* (≥ 3000ms, IO14 only) |
+| `typedef void (*bsp_button_cb_t)(int btn_id, bsp_btn_event_t event)` | Callback type: `btn_id` = `BSP_BTN_BOOT` or `BSP_BTN_IO14`, `event` = one of the three gestures above |
+| `void bsp_buttons_init(bsp_button_cb_t callback)`                   | Start button monitoring task. Calls `callback` on classified gesture events.                     |
 
 ## Internal API (`bsp_priv.h`)
 
@@ -123,8 +127,8 @@ esp_lcd_panel_set_gap(panel_handle, 0, 35);
 #include "bsp.h"
 #include "ui.h"
 
-static void on_button_press(int btn_id, bool pressed) {
-    if (!pressed) return;
+static void on_button_press(int btn_id, bsp_btn_event_t event) {
+    if (event != BSP_BTN_SHORT) return;
     uint8_t br = bsp_display_get_brightness();
     if (btn_id == BSP_BTN_BOOT)  br = (br >= 100) ? 100 : br + 10;
     if (btn_id == BSP_BTN_IO14)  br = (br <= 10)  ? 10  : br - 10;

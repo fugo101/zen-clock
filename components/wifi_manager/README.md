@@ -115,6 +115,12 @@ esp_err_t wifi_manager_stop(void);
  * @return Pointer to SSID string, or empty string if not connected.
  */
 const char *wifi_manager_get_ssid(void);
+
+/**
+ * @brief Get connected IP address as a string.
+ * @return Pointer to IP string, or empty string if not connected.
+ */
+const char *wifi_manager_get_ip_str(void);
 ```
 
 ### Credential Management
@@ -131,14 +137,17 @@ bool wifi_manager_has_credential(void);
  * Called by BLE provisioning callback after user enters WiFi details.
  * @param ssid Network SSID (max 32 bytes)
  * @param pass Network password (max 64 bytes)
+ * @return ESP_OK on success, or an NVS error.
  */
-void wifi_manager_set_credential(const char *ssid, const char *pass);
+esp_err_t wifi_manager_set_credential(const char *ssid, const char *pass);
 
 /**
  * @brief Clear stored credentials from NVS.
- * Called by IO14 double-click handler or provisioning timeout.
+ * Called on Reset WiFi (IO14 emergency hold, routed through do_reset_wifi()) and on
+ * BLE_PROV_FAILED (wrong-password retry — clears so the next provisioning attempt starts clean).
+ * @return ESP_OK on success, or an NVS error.
  */
-void wifi_manager_clear_credential(void);
+esp_err_t wifi_manager_clear_credential(void);
 ```
 
 ### Event Callback
@@ -147,12 +156,15 @@ void wifi_manager_clear_credential(void);
 /**
  * @brief Set callback function for WiFi Manager events.
  * Callback fires from background task when state changes.
- * Always wrap UI updates with lvgl_port_lock() / lvgl_port_unlock().
+ * Callbacks that touch LVGL from this context should use a *bounded* lock (see CLAUDE.md's
+ * Critical Rules — an unbounded lvgl_port_lock(0) here can stall the wifi task past
+ * wifi_manager_stop()'s STOP_TIMEOUT_MS), not the plain lvgl_port_lock(0)/unlock() pattern used
+ * elsewhere.
  * @param callback Function pointer, or NULL to disable
  */
-void wifi_manager_set_callback(wifi_mgr_callback_t callback);
+void wifi_manager_set_callback(wifi_event_cb_t callback);
 
-typedef void (*wifi_mgr_callback_t)(wifi_mgr_event_t event);
+typedef void (*wifi_event_cb_t)(wifi_manager_event_t event);
 ```
 
 ## Events
@@ -165,6 +177,7 @@ WiFi Manager fires events via the callback when state changes:
 | `WIFI_MGR_CONNECTING`   | Attempting to connect to matched SSID                   | Update UI: show "Connecting to [SSID]..."                       |
 | `WIFI_MGR_GOT_IP`       | Got IP address via DHCP                                 | (Internal: DNS probe in progress)                               |
 | `WIFI_MGR_CONNECTED`    | DNS probe successful, internet verified                 | Update UI: show WiFi icon, enable time display                  |
+| `WIFI_MGR_NO_INTERNET`  | Fired **right after** `CONNECTED` when the DNS probe failed | Update UI: paint the yellow "associated but no internet" state over the green just drawn — association and IP lease are real, only the DNS probe failed |
 | `WIFI_MGR_DISCONNECTED` | Lost WiFi connection while connected                    | Update UI to disconnected, schedule auto-reconnect with backoff |
 | `WIFI_MGR_NO_CRED`      | No credentials stored in NVS at start                   | Call `ble_provisioning_start()` to enter setup mode             |
 | `WIFI_MGR_NO_MATCH`     | Stored SSID not found in scan results                   | Update UI to disconnected, schedule auto-reconnect with backoff |
@@ -188,12 +201,17 @@ WiFi Manager fires events via the callback when state changes:
       disconnected and schedule a reconnect timer — device operates offline, retries with exponential backoff
       (30 s → 60 s → … → 300 s max). **Do not start BLE provisioning** for these events.
 
-3. **Lock UI updates in callback:**
+3. **Lock UI updates in callback, with a bounded wait:** this callback runs synchronously on the
+   wifi task, so an unbounded `lvgl_port_lock(0)` here can stall the wifi task past
+   `wifi_manager_stop()`'s `STOP_TIMEOUT_MS`. Use a short bounded wait, skip the paint on failure,
+   and never call `lvgl_port_unlock()` on the failure path (a timed-out lock doesn't hold the
+   mutex). See `wifi_event_lvgl_lock()` in `app_handlers.c` for the pattern:
    ```c
-   static void on_wifi_event(wifi_mgr_event_t event) {
-       lvgl_port_lock(0);
-       // ... update UI widgets ...
-       lvgl_port_unlock();
+   static void on_wifi_event(wifi_manager_event_t event) {
+       if (wifi_event_lvgl_lock()) { // bounded wait, e.g. 50ms
+           // ... update UI widgets ...
+           lvgl_port_unlock();
+       }
    }
    ```
 
@@ -223,13 +241,16 @@ schedules an auto-reconnect via `wifi_manager_start()` with exponential backoff.
 
 ### DNS Probe (Internet Verification)
 
-After obtaining an IP address, WiFi Manager sends a DNS query to `pool.ntp.org` to verify internet connectivity. This
-distinguishes:
+After obtaining an IP address, WiFi Manager sends a DNS query to `pool.ntp.org` to verify internet
+connectivity. The state machine enters **CONNECTED either way** — the association and IP lease are
+real, and a LAN-only network is still usable — but the DNS probe result changes what fires next:
 
-- **Local WiFi only** (no internet, e.g., captive portal) — VERIFYING state, no CONNECTED event
-- **Full internet access** — CONNECTED event fires
+- **Full internet access** — only `WIFI_MGR_CONNECTED` fires.
+- **Local WiFi only** (no internet, e.g. a captive portal) — `WIFI_MGR_CONNECTED` fires first, then
+  `WIFI_MGR_NO_INTERNET` fires immediately after, so the caller can paint over the just-drawn
+  "online" state. This is deliberate ordering — reversing it would leave a stale green icon.
 
-This is important for NTP synchronization and ensures the device is truly online.
+This is important for NTP synchronization and ensures the device knows when it's truly online.
 
 ## Configuration
 

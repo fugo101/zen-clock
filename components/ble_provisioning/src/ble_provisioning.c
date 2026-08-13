@@ -9,7 +9,7 @@
 // ⚠️  IMPORTANT: Always call wifi_manager_stop() before ble_provisioning_start()
 //     to avoid conflict with network_prov_mgr's internal esp_wifi_connect() calls.
 //
-// ⚠️  IMPORTANT: Verify NETWORK_PROV_CRED_RECV event data type against the
+// ⚠️  IMPORTANT: Verify NETWORK_PROV_WIFI_CRED_RECV event data type against the
 //     installed network_provisioning/manager.h header before building.
 
 #include "ble_provisioning.h"
