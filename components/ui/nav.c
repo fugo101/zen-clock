@@ -39,12 +39,6 @@ static nav_action_cb_t s_sleep_cb = NULL;
 static nav_action_cb_t s_ntp_resync_cb = NULL;
 static nav_action_cb_t s_provisioning_cb = NULL;
 
-// Settings item indices for action routing
-#define SETTINGS_IDX_SLEEP_NOW    11
-#define SETTINGS_IDX_NTP_RESYNC   13
-#define SETTINGS_IDX_RESET_WIFI   14
-#define SETTINGS_IDX_PROVISIONING 15
-
 // ============================================================
 // Screen switching helpers
 // ============================================================
@@ -57,12 +51,13 @@ static void destroy_current_screen(void)
     clock_face_destroy();
     status_bar_destroy();
     break;
-  case SCR_MENU: // NOLINT(*-branch-clone)
-    // menu_screen has no timers, but destroy status bar
+  case SCR_MENU:
+    menu_screen_destroy();
     status_bar_destroy();
     break;
   case SCR_SETTINGS_LIST:
   case SCR_SETTINGS_EDIT:
+    settings_screen_destroy();
     status_bar_destroy();
     break;
   case SCR_DEVICE_INFO:
@@ -220,13 +215,13 @@ nav_action_cb_t nav_handle_action(nav_action_t action)
     else if (action == NAV_ACTION_SELECT)
     {
       s_menu_focus = menu_screen_get_focus();
-      if (s_menu_focus == 0)
+      if (s_menu_focus == MENU_ROW_SETTINGS)
       {
         show_settings_screen();
         settings_screen_set_focus(s_settings_focus);
         s_state = SCR_SETTINGS_LIST;
       }
-      else if (s_menu_focus == 1)
+      else if (s_menu_focus == MENU_ROW_DEVICE_INFO)
       {
         show_device_info_screen();
         s_state = SCR_DEVICE_INFO;
@@ -256,19 +251,19 @@ nav_action_cb_t nav_handle_action(nav_action_t action)
       if (settings_screen_is_action_item(s_settings_focus))
       {
         nav_action_cb_t cb = NULL;
-        if (s_settings_focus == SETTINGS_IDX_SLEEP_NOW)
+        if (s_settings_focus == SETTINGS_ROW_SLEEP_NOW)
         {
           cb = s_sleep_cb;
         }
-        else if (s_settings_focus == SETTINGS_IDX_NTP_RESYNC)
+        else if (s_settings_focus == SETTINGS_ROW_NTP_RESYNC)
         {
           cb = s_ntp_resync_cb;
         }
-        else if (s_settings_focus == SETTINGS_IDX_RESET_WIFI)
+        else if (s_settings_focus == SETTINGS_ROW_RESET_WIFI)
         {
           cb = s_reset_wifi_cb;
         }
-        else if (s_settings_focus == SETTINGS_IDX_PROVISIONING)
+        else if (s_settings_focus == SETTINGS_ROW_PROVISIONING)
         {
           cb = s_provisioning_cb;
         }

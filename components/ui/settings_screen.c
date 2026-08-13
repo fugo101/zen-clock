@@ -13,23 +13,11 @@
 //   RANGE  — increments/decrements numeric value (Brightness, Sleep H/M/S, Timezone)
 //   ACTION — executes on select, no edit mode (Sleep Now, NTP Resync, Reset Wi-Fi)
 //
-// Layout (16 items, 4 headers):
-//   [0] ── Display ──  HEADER
-//   [1] Theme          TOGGLE
-//   [2] Brightness     RANGE
-//   [3] ── Clock ──    HEADER
-//   [4] Time Format    TOGGLE
-//   [5] Show Secs      TOGGLE
-//   [6] Timezone       RANGE  -12..+14
-//   [7] ── Sleep ──    HEADER
-//   [8] Sleep H        RANGE
-//   [9] Sleep M        RANGE
-//  [10] Sleep S        RANGE
-//  [11] Sleep Now      ACTION
-//  [12] ── Network ──  HEADER
-//  [13] NTP Resync     ACTION
-//  [14] Reset WiFi     ACTION
-//  [15] Provisioning   ACTION  (enter provisioning / re-open QR; keeps the credential)
+// Row layout — canonical source is `settings_row_t` in settings_screen.h. 4 headers, 12 items:
+//   Display:  Theme, Brightness
+//   Clock:    Time Format, Show Secs, Timezone (-12..+14)
+//   Sleep:    Sleep H, Sleep M, Sleep S, Sleep Now
+//   Network:  NTP Resync, Reset WiFi, Provisioning (re-enter provisioning; keeps the credential)
 
 #include "settings_screen.h"
 #include "ui_utils.h"
@@ -74,10 +62,10 @@ static const char *s_theme_options[] = {"Dark", "Light"};
 static const char *s_format_options[] = {"24H", "12H"};
 static const char *s_secs_options[] = {"On", "Off"};
 
-#define SETTINGS_ITEM_COUNT 16
-#define SETTINGS_VISIBLE    5 // items shown at once (5×24px = 120px <= 170-50=120px)
+#define SETTINGS_VISIBLE 5 // items shown at once (5×24px = 120px <= 170-50=120px)
 
-static setting_item_t s_items[SETTINGS_ITEM_COUNT] = {
+// Indexed by settings_row_t (settings_screen.h) — order must match the enum exactly.
+static setting_item_t s_items[SETTINGS_ROW_COUNT] = {
     {.label = "- Display -", .type = STYPE_HEADER},
     {.label = "Theme", .type = STYPE_TOGGLE, .options = s_theme_options, .option_count = 2},
     {.label = "Brightness", .type = STYPE_RANGE, .min = SETTINGS_BRIGHTNESS_MIN, .max = 100, .step = 10, .unit = "%"},
@@ -112,8 +100,8 @@ static int s_focus = 0;
 static int s_scroll = 0;
 static bool s_editing = false;
 
-static lv_obj_t *s_name_labels[SETTINGS_ITEM_COUNT] = {NULL};
-static lv_obj_t *s_value_labels[SETTINGS_ITEM_COUNT] = {NULL};
+static lv_obj_t *s_name_labels[SETTINGS_ROW_COUNT] = {NULL};
+static lv_obj_t *s_value_labels[SETTINGS_ROW_COUNT] = {NULL};
 static lv_obj_t *s_focus_marker = NULL;
 static lv_obj_t *s_edit_box = NULL;
 
@@ -122,7 +110,7 @@ static lv_obj_t *s_edit_box = NULL;
 // ============================================================
 static void apply_scroll(void)
 {
-  for (int i = 0; i < SETTINGS_ITEM_COUNT; i++)
+  for (int i = 0; i < SETTINGS_ROW_COUNT; i++)
   {
     bool visible = (i >= s_scroll && i < s_scroll + SETTINGS_VISIBLE);
     int y = LIST_Y_START + (i - s_scroll) * LIST_ITEM_H;
@@ -158,7 +146,8 @@ static void apply_scroll(void)
 // ============================================================
 static uint32_t compute_sleep_s(void)
 {
-  return (uint32_t) s_items[8].value * 3600 + (uint32_t) s_items[9].value * 60 + (uint32_t) s_items[10].value;
+  return (uint32_t) s_items[SETTINGS_ROW_SLEEP_H].value * 3600 + (uint32_t) s_items[SETTINGS_ROW_SLEEP_M].value * 60 +
+         (uint32_t) s_items[SETTINGS_ROW_SLEEP_S].value;
 }
 
 // ============================================================
@@ -217,7 +206,7 @@ static void update_focus_visual(void)
     }
   }
 
-  for (int i = 0; i < SETTINGS_ITEM_COUNT; i++)
+  for (int i = 0; i < SETTINGS_ROW_COUNT; i++)
   {
     if (!s_name_labels[i])
     {
@@ -297,7 +286,7 @@ static void hide_edit_box(void)
 #define NVS_FLUSH_DELAY_MS 1000
 
 static lv_timer_t *s_flush_timer = NULL;
-static bool s_dirty[SETTINGS_ITEM_COUNT] = {false};
+static bool s_dirty[SETTINGS_ROW_COUNT] = {false};
 
 // Everything the user must see immediately. Cheap: RAM, LEDC, or a tzset().
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
@@ -307,18 +296,18 @@ static void apply_live(const int index)
 
   switch (index)
   {
-  case 1: // Theme
+  case SETTINGS_ROW_THEME:
     ui_set_theme(item->value == 1);
     break;
-  case 2: // Brightness
+  case SETTINGS_ROW_BRIGHTNESS:
     bsp_display_set_brightness((uint8_t) item->value, 0);
     break;
-  case 6: // Timezone
+  case SETTINGS_ROW_TIMEZONE:
     settings_apply_timezone((int8_t) item->value);
     break;
-  case 8:  // Sleep H
-  case 9:  // Sleep M
-  case 10: // Sleep S
+  case SETTINGS_ROW_SLEEP_H:
+  case SETTINGS_ROW_SLEEP_M:
+  case SETTINGS_ROW_SLEEP_S:
     deep_sleep_update_timeout(compute_sleep_s());
     break;
   default:
@@ -336,35 +325,35 @@ static void persist_item(const int index)
 
   switch (index)
   {
-  case 1: // Theme
+  case SETTINGS_ROW_THEME:
     settings_set_theme_light(item->value == 1);
     ESP_LOGI(tag, "Theme -> %s", item->value == 1 ? "Light" : "Dark");
     break;
-  case 2: // Brightness
+  case SETTINGS_ROW_BRIGHTNESS:
     settings_set_brightness((uint8_t) item->value);
     ESP_LOGI(tag, "Brightness -> %d%%", item->value);
     break;
-  case 4: // Time Format
+  case SETTINGS_ROW_TIME_FORMAT:
     settings_set_time_format_24h(item->value == 0);
     ESP_LOGI(tag, "Time Format -> %s", item->value == 0 ? "24H" : "12H");
     break;
-  case 5: // Show Seconds
+  case SETTINGS_ROW_SHOW_SECS:
     settings_set_show_seconds(item->value == 0);
     ESP_LOGI(tag, "Show Seconds -> %s", item->value == 0 ? "On" : "Off");
     break;
-  case 6: // Timezone
+  case SETTINGS_ROW_TIMEZONE:
     settings_set_timezone_offset((int8_t) item->value);
     ESP_LOGI(tag, "Timezone -> UTC%+d", item->value);
     break;
-  case 8: // Sleep H
+  case SETTINGS_ROW_SLEEP_H:
     settings_set_sleep_h((uint8_t) item->value);
     ESP_LOGI(tag, "Sleep H -> %d", item->value);
     break;
-  case 9: // Sleep M
+  case SETTINGS_ROW_SLEEP_M:
     settings_set_sleep_m((uint8_t) item->value);
     ESP_LOGI(tag, "Sleep M -> %d", item->value);
     break;
-  case 10: // Sleep S
+  case SETTINGS_ROW_SLEEP_S:
     settings_set_sleep_s((uint8_t) item->value);
     ESP_LOGI(tag, "Sleep S -> %d", item->value);
     break;
@@ -386,7 +375,7 @@ static void flush_pending(void)
 {
   cancel_flush_timer();
 
-  for (int i = 0; i < SETTINGS_ITEM_COUNT; i++)
+  for (int i = 0; i < SETTINGS_ROW_COUNT; i++)
   {
     if (s_dirty[i])
     {
@@ -436,7 +425,7 @@ static void apply_change(const int index)
 // ============================================================
 void settings_screen_create(lv_obj_t *parent)
 {
-  s_focus = 1; // first focusable item (skip header at idx 0)
+  s_focus = SETTINGS_ROW_THEME; // first focusable item (skip header at idx 0)
   s_scroll = 0;
   s_editing = false;
   s_edit_box = NULL;
@@ -446,14 +435,14 @@ void settings_screen_create(lv_obj_t *parent)
   flush_pending();
 
   // Load current values from NVS
-  s_items[1].value = settings_get_theme_light() ? 1 : 0;
-  s_items[2].value = (int) settings_get_brightness();
-  s_items[4].value = settings_get_time_format_24h() ? 0 : 1;
-  s_items[5].value = settings_get_show_seconds() ? 0 : 1;
-  s_items[6].value = (int) settings_get_timezone_offset();
-  s_items[8].value = (int) settings_get_sleep_h();
-  s_items[9].value = (int) settings_get_sleep_m();
-  s_items[10].value = (int) settings_get_sleep_s();
+  s_items[SETTINGS_ROW_THEME].value = settings_get_theme_light() ? 1 : 0;
+  s_items[SETTINGS_ROW_BRIGHTNESS].value = (int) settings_get_brightness();
+  s_items[SETTINGS_ROW_TIME_FORMAT].value = settings_get_time_format_24h() ? 0 : 1;
+  s_items[SETTINGS_ROW_SHOW_SECS].value = settings_get_show_seconds() ? 0 : 1;
+  s_items[SETTINGS_ROW_TIMEZONE].value = (int) settings_get_timezone_offset();
+  s_items[SETTINGS_ROW_SLEEP_H].value = (int) settings_get_sleep_h();
+  s_items[SETTINGS_ROW_SLEEP_M].value = (int) settings_get_sleep_m();
+  s_items[SETTINGS_ROW_SLEEP_S].value = (int) settings_get_sleep_s();
 
   // Title
   lv_obj_t *title = lv_label_create(parent);
@@ -469,7 +458,7 @@ void settings_screen_create(lv_obj_t *parent)
   lv_obj_set_pos(s_focus_marker, LIST_X_PAD, LIST_Y_START);
 
   // All item rows
-  for (int i = 0; i < SETTINGS_ITEM_COUNT; i++)
+  for (int i = 0; i < SETTINGS_ROW_COUNT; i++)
   {
     int y = LIST_Y_START + i * LIST_ITEM_H;
 
@@ -504,16 +493,49 @@ void settings_screen_create(lv_obj_t *parent)
   update_focus_visual();
 }
 
+void settings_screen_destroy(void)
+{
+  // Land any pending NVS write before the widgets go away. In practice this is already
+  // unreachable dead state — every exit from SCR_SETTINGS_EDIT goes through
+  // settings_screen_exit_edit(), which already flushes — but that is an emergent invariant, not
+  // one this function can rely on staying true. Making the flush explicit here means it stays
+  // correct even if a future caller reaches this screen's teardown a different way.
+  flush_pending();
+
+  for (int i = 0; i < SETTINGS_ROW_COUNT; i++)
+  {
+    s_name_labels[i] = NULL;
+    s_value_labels[i] = NULL;
+  }
+  s_focus_marker = NULL;
+  hide_edit_box(); // also NULLs s_edit_box
+}
+
 void settings_screen_focus_prev(void)
 {
+  const int start = s_focus;
+  // Bounded to SETTINGS_ROW_COUNT steps — ui_circ_prev() is unconditional modular arithmetic with
+  // no stopping condition of its own, so a table edit that leaves zero non-header rows would spin
+  // this loop forever on the LVGL task (wedged screen, watchdog trip). bugprone-infinite-loop is
+  // disabled repo-wide, so static analysis will not flag a regression here — the bound is load-
+  // bearing, not decorative.
+  int steps = 0;
   do
   {
-    s_focus = ui_circ_prev(s_focus, SETTINGS_ITEM_COUNT);
-  } while (s_items[s_focus].type == STYPE_HEADER);
+    s_focus = ui_circ_prev(s_focus, SETTINGS_ROW_COUNT);
+    steps++;
+  } while (s_items[s_focus].type == STYPE_HEADER && steps < SETTINGS_ROW_COUNT);
 
-  if (s_focus == SETTINGS_ITEM_COUNT - 1)
+  if (s_items[s_focus].type == STYPE_HEADER)
   {
-    s_scroll = SETTINGS_ITEM_COUNT - SETTINGS_VISIBLE;
+    // No focusable row anywhere in the table — stay put instead of leaving focus on a header.
+    s_focus = start;
+    return;
+  }
+
+  if (s_focus == SETTINGS_ROW_COUNT - 1)
+  {
+    s_scroll = SETTINGS_ROW_COUNT - SETTINGS_VISIBLE;
   }
   else if (s_focus < s_scroll)
   {
@@ -525,12 +547,23 @@ void settings_screen_focus_prev(void)
 
 void settings_screen_focus_next(void)
 {
+  const int start = s_focus;
+  // See settings_screen_focus_prev() — same bounded-loop rationale.
+  int steps = 0;
   do
   {
-    s_focus = ui_circ_next(s_focus, SETTINGS_ITEM_COUNT);
-  } while (s_items[s_focus].type == STYPE_HEADER);
+    s_focus = ui_circ_next(s_focus, SETTINGS_ROW_COUNT);
+    steps++;
+  } while (s_items[s_focus].type == STYPE_HEADER && steps < SETTINGS_ROW_COUNT);
 
-  if (s_focus == 1) // wrapped to first focusable item
+  if (s_items[s_focus].type == STYPE_HEADER)
+  {
+    // No focusable row anywhere in the table — stay put instead of leaving focus on a header.
+    s_focus = start;
+    return;
+  }
+
+  if (s_focus == SETTINGS_ROW_THEME) // wrapped to first focusable item
   {
     s_scroll = 0;
   }
@@ -549,7 +582,7 @@ int settings_screen_get_focus(void)
 
 void settings_screen_set_focus(int index)
 {
-  if (index >= 0 && index < SETTINGS_ITEM_COUNT && s_items[index].type != STYPE_HEADER)
+  if (index >= 0 && index < SETTINGS_ROW_COUNT && s_items[index].type != STYPE_HEADER)
   {
     s_focus = index;
     if (s_focus < s_scroll)
@@ -567,7 +600,7 @@ void settings_screen_set_focus(int index)
 
 bool settings_screen_is_action_item(int index)
 {
-  if (index < 0 || index >= SETTINGS_ITEM_COUNT)
+  if (index < 0 || index >= SETTINGS_ROW_COUNT)
   {
     return false;
   }
@@ -576,7 +609,7 @@ bool settings_screen_is_action_item(int index)
 
 nav_action_cb_t settings_screen_resolve_action(int index, nav_action_cb_t cb)
 {
-  if (index < 0 || index >= SETTINGS_ITEM_COUNT)
+  if (index < 0 || index >= SETTINGS_ROW_COUNT)
   {
     return NULL;
   }
@@ -592,7 +625,7 @@ nav_action_cb_t settings_screen_resolve_action(int index, nav_action_cb_t cb)
 
 void settings_screen_enter_edit(int index)
 {
-  if (index < 0 || index >= SETTINGS_ITEM_COUNT)
+  if (index < 0 || index >= SETTINGS_ROW_COUNT)
   {
     return;
   }
