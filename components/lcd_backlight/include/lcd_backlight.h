@@ -69,16 +69,6 @@ extern "C"
    */
   uint8_t lcd_backlight_get_brightness(lcd_backlight_handle_t handle);
 
-  /**
-   * @brief De-initialize the driver by de-configuring ledc driver & freeing handle
-   *
-   * @param handle lcd_backlight handle
-   *
-   * @return
-   *      - ESP_OK Success
-   */
-  esp_err_t lcd_backlight_deinit(lcd_backlight_handle_t handle);
-
 #ifdef __cplusplus
 }
 #endif

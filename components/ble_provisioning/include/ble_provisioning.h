@@ -17,7 +17,6 @@ extern "C"
   typedef enum
   {
     BLE_PROV_STARTED,       // BLE advertisement active, waiting for client
-    BLE_PROV_CONNECTED,     // Phone connected via BLE
     BLE_PROV_CRED_RECEIVED, // Credentials received — ssid/pass args are valid
     BLE_PROV_SUCCESS,       // Provisioning complete — safe to stop and release memory
     BLE_PROV_FAILED,        // Provisioning failed (bad credentials or error)

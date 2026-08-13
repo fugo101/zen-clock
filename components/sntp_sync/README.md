@@ -26,12 +26,6 @@ esp_err_t sntp_sync_start(sntp_sync_cb_t on_sync);
 // Safe to call multiple times; no-op if sync is still fresh.
 void sntp_sync_notify_connected(void);
 
-// Check if time has been synchronized this session.
-bool sntp_sync_is_synced(void);
-
-// Stop SNTP client and free resources.
-void sntp_sync_stop(void);
-
 // Force immediate NTP resync regardless of last sync time (manual user trigger).
 void sntp_sync_force_resync(void);
 

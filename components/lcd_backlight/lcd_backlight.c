@@ -151,21 +151,3 @@ uint8_t lcd_backlight_get_brightness(lcd_backlight_handle_t handle)
   }
   return handle->brightness_pct;
 }
-
-esp_err_t lcd_backlight_deinit(lcd_backlight_handle_t handle)
-{
-  if (handle)
-  {
-    ledc_fade_stop(LEDC_LOW_SPEED_MODE, handle->channel);
-    ledc_timer_pause(LEDC_LOW_SPEED_MODE, handle->timer_num);
-    // NOLINTNEXTLINE(*-invalid-enum-default-initialization)
-    const ledc_timer_config_t timer_cfg = {
-        .speed_mode = LEDC_LOW_SPEED_MODE,
-        .timer_num = handle->timer_num,
-        .deconfigure = true,
-    };
-    ledc_timer_config(&timer_cfg);
-    free(handle);
-  }
-  return ESP_OK;
-}
