@@ -15,6 +15,10 @@ concurrency:
 
 jobs:
   build:
+    # This name is the required-status-check contract registered on the `main` ruleset.
+    # Renaming this job means the required check never reports and every PR blocks forever —
+    # update the ruleset in the same change if you ever rename it.
+    name: Build, Test & Analyze
     runs-on: [ self-hosted, Linux, X64 ]
     timeout-minutes: 20
     # No `if: ... fork == false` guard here: the repo already requires manual approval to run
