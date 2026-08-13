@@ -19,7 +19,7 @@ A beautiful clock project running on the **LilyGo T-Display-S3** board.
 
 | Layer            | Technology                                                                                  |
 |------------------|---------------------------------------------------------------------------------------------|
-| **Framework**    | ESP-IDF v6.0.0 (via PlatformIO)                                                             |
+| **Framework**    | ESP-IDF v6.0.1 (via PlatformIO, `platform = espressif32@7.0.1`)                             |
 | **Graphics**     | LVGL 9.5.0                                                                                  |
 | **LVGL Port**    | [esp_lvgl_port](https://github.com/espressif/esp-bsp/tree/master/components/esp_lvgl_port)  |
 | **UI**           | Hand-written LVGL code (no external UI designer)                                            |
@@ -56,7 +56,11 @@ ZenClock/
 │   │   ├── menu_screen.c/.h   # Main menu screen
 │   │   ├── settings_screen.c/.h # Settings screen with inline edit
 │   │   ├── device_info_screen.c/.h # System Info screen (12 rows, scrollable)
+│   │   ├── clock_face.h       # Clock face interface (swappable implementation)
 │   │   ├── clock_face_text.c  # Text-based clock face rendering
+│   │   ├── status_bar.c/.h    # Tailscale/NTP/WiFi/battery status icons
+│   │   ├── ui_list.c/.h       # Shared LVGL scroll/timer helpers + layout constants
+│   │   ├── ui_utils.c/.h      # Pure helpers (no LVGL) — reused by native unit tests
 │   │   └── prov_screen.c/.h   # QR code overlay for BLE provisioning
 │   ├── wifi_manager/          # WiFi connection + BLE provisioning fallback
 │   │   └── README.md          # 📖 WiFi manager API & architecture
@@ -71,7 +75,7 @@ ZenClock/
 │                          # WireGuard lwIP integration (symlink → submodule)
 │                          # Third-party BSD-3 — see THIRD_PARTY.md
 ├── vendor/
-│   └── microlink/             # git submodule (branch: esp-idf-6x-compat)
+│   └── microlink/             # git submodule (branch: main)
 ├── include/
 │   └── board_config.h         # Pin definitions and board constants (single source)
 ├── src/
@@ -130,6 +134,17 @@ Flashing a blank board without a PlatformIO checkout (no bootloader on it yet)? 
 `partitions.bin`, `ota_data_initial.bin`, `firmware.bin`, a checksum file, and the exact
 `esptool.py` command with offsets in the release notes.
 
+### Development
+
+Before pushing, run the same gates `.github/workflows/ci.yml` runs:
+
+```bash
+pio test -e native              # host-side unit tests, see test/test_pure_logic/
+python3 scripts/pio_check.py    # static analysis (clang-tidy)
+python3 scripts/format.py --check
+python3 scripts/check_secrets.py --staged   # credential leak guard
+```
+
 ### First Boot
 
 **On first boot (no WiFi credentials in NVS):**
@@ -167,11 +182,11 @@ s → … → 5 min max). NTP syncs immediately once connection is restored.
 ```
 Clock → (BOOT long press) → Menu → (SELECT) → Settings
                                  → (SELECT) → System Info
-Settings (15 items with 4 section groups, scrollable — 5 visible at a time):
+Settings (16 rows = 4 section headers + 12 items, scrollable — 5 visible at a time):
   — Display —   Theme, Brightness
-  — Clock —     Time Format (24H/12H), Show Seconds, Timezone (UTC offset)
+  — Clock —     Time Format (24H/12H), Show Secs, Timezone (UTC offset)
   — Sleep —     Sleep H, Sleep M, Sleep S, Sleep Now
-  — Network —   NTP Resync, Reset WiFi
+  — Network —   NTP Resync, Reset WiFi, Provisioning
 
 System Info (12 rows, 5 visible, scrollable):
   Chip, Firmware, MAC, Free Heap, Total Heap, Uptime,
@@ -180,7 +195,7 @@ System Info (12 rows, 5 visible, scrollable):
 
 TOGGLE/RANGE items use inline edit: SELECT to enter, UP/DOWN to change value (auto-saved to NVS), SELECT or BACK to
 exit.
-ACTION items (Sleep Now, NTP Resync, Reset WiFi): SELECT executes immediately.
+ACTION items (Sleep Now, NTP Resync, Reset WiFi, Provisioning): SELECT executes immediately.
 
 **Auto-sleep:** Configure via Settings → Sleep H / Sleep M / Sleep S. All three at 0 disables auto-sleep.
 

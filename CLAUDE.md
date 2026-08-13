@@ -22,6 +22,28 @@ pio run -t upload && pio device monitor
 format.bat         # Windows
 ```
 
+## Development Commands
+
+Run before committing — `.github/workflows/ci.yml` runs the same gates on every push:
+
+```bash
+# Host-side unit tests for logic pure enough not to need the ESP-IDF toolchain (see test/test_pure_logic/)
+pio test -e native
+
+# Static analysis — clang-tidy, using the exact checks in .clang-tidy (a bare `pio check` does NOT
+# use .clang-tidy; PlatformIO's clangtidy tool injects its own --checks=* that overrides it, so
+# this wrapper also verifies platformio.ini's check_flags hasn't drifted from .clang-tidy)
+python3 scripts/pio_check.py
+
+# Format check without writing files (what CI runs; ./format.sh above writes in place)
+python3 scripts/format.py --check
+
+# Credential leak guard — run before every commit. sdkconfig.lilygo-t-display-s3 is tracked in
+# git, and `idf.py menuconfig` writes the Tailscale auth key straight into it; this is the only
+# thing that stops that key from being committed.
+python3 scripts/check_secrets.py --staged
+```
+
 ## Project Overview
 
 ZenClock is ESP-IDF 6.0+ firmware for the **LilyGo T-Display-S3** (ESP32-S3, 320×170 ST7789 LCD via Intel 8080 bus).
@@ -34,12 +56,20 @@ Built with PlatformIO. The main board config is `sdkconfig.lilygo-t-display-s3`.
 `main.c` is a pure boot orchestrator — no business logic:
 
 ```
-bsp_display_init → settings_init → deep_sleep_init(sleep_s)
-→ ui_init(is_light)  [calls nav_init() internally]
+bsp_display_init → settings_init → settings_apply_timezone(offset_from_nvs)
+→ deep_sleep_init(sleep_h*3600 + sleep_m*60 + sleep_s)   # H/M/S read from NVS, summed
+→ lvgl_port_lock(0) → ui_init(is_light) [calls nav_init() internally] → lvgl_port_unlock()
 → bsp_display_set_brightness(brightness_from_nvs, 2000ms)
-→ bsp_buttons_init → wifi_manager_init → ble_provisioning_init
-→ app_handlers_register_nav_callbacks() → wifi_manager_start
+→ bsp_buttons_init → wifi_manager_init()
+   ├─ ESP_OK: wifi_manager_set_callback(on_wifi_event) → ble_provisioning_init(on_ble_prov_event)
+   │          → app_handlers_register_nav_callbacks() → wifi_manager_start()
+   └─ else:   log the failure, app_handlers_register_nav_callbacks() only — no BLE/WiFi start,
+              device runs as an offline clock
 ```
+
+`wifi_manager_init()` failure is a real branch, not a theoretical one — if it fails, its internal
+task/event-group state is unusable, so nothing downstream may touch WiFi or BLE provisioning.
+Nav callbacks are still registered either way so the device stays a fully usable clock.
 
 On first boot (no NVS credentials), `wifi_manager_start()` fires `WIFI_MGR_NO_CRED`, which triggers
 `ble_provisioning_start()`.
@@ -54,11 +84,18 @@ All event callbacks and nav wiring live here:
 | `on_wifi_event`                         | WiFi manager state machine transitions; calls `microlink_init/start` on first CONNECTED, `microlink_rebind` on reconnect |
 | `on_ble_prov_event`                     | BLE provisioning lifecycle events                                                                                        |
 | `on_sntp_sync`                          | NTP sync status updates                                                                                                  |
+| `on_battery_reading`                    | Registered via `status_bar_register_battery_cb()`; clamps brightness to `BATT_LOW_BRIGHTNESS` on the not-low→low edge (not level-triggered), restores it on recovery. Never fires on USB power, never writes NVS |
 | `app_handlers_register_nav_callbacks()` | Wires `do_reset_wifi`, `do_sleep_now`, `do_ntp_resync` and `do_provisioning` into nav system — called once at boot            |
 
 `on_wifi_event` starts BLE provisioning **only** on `NO_CRED`. `NO_MATCH`, `ALL_FAILED` and
 `DISCONNECTED` schedule a reconnect instead (30s doubling to 5min) — losing coverage must never drop the device into
 provisioning, and a retry must always stay armed.
+
+**Worker task (`btn_worker`):** deferred nav work (`do_reset_wifi`, `dismiss_provisioning`, and the
+callback `nav_handle_action()` returns) runs on a dedicated FreeRTOS task, not inline in
+`on_button_press`. Running it inline used to stall `bsp_buttons.c`'s `held_ms` counter, which made
+the two-button deep-sleep combo unreachable while a blocking action was running — a button press
+mid-action now always lands instead of being silently dropped.
 
 ### Components
 
@@ -68,7 +105,7 @@ provisioning, and a retry must always stay armed.
 | `components/ui/`               | LVGL UI — modular widgets, see below                                                                                                                                                                                       |
 | `components/wifi_manager/`     | WiFi state machine: IDLE → SCANNING → CONNECTING → VERIFYING → CONNECTED                                                                                                                                                   |
 | `components/ble_provisioning/` | BLE WiFi provisioning via `espressif/network_provisioning`                                                                                                                                                                 |
-| `components/settings/`         | NVS-backed settings: theme, brightness, sleep timeout (H/M/S)                                                                                                                                                              |
+| `components/settings/`         | NVS-backed settings: theme, brightness, sleep timeout (H/M/S), time format (24h/12h), show-seconds, timezone offset                                                                                                        |
 | `components/sntp_sync/`        | NTP time synchronization; skips initial sync on deep-sleep wake if recently synced                                                                                                                                         |
 | `components/deep_sleep/`       | Auto-sleep timer (inactivity) + manual trigger + ext1 wakeup on GPIO0/GPIO14. Cancellable during the fade; declines while an inhibit callback says so. Cuts the LCD rail and latches it — see the hold/release warning below |
 | `components/lcd_backlight/`    | LCD backlight driver via LEDC PWM                                                                                                                                                                                          |
@@ -84,14 +121,16 @@ widgets.
 
 | Source                 | Role                                                                                              |
 |------------------------|---------------------------------------------------------------------------------------------------|
-| `ui.c`                 | Theme init + delegates to `nav_init()`                                                            |
-| `nav.c`                | **Navigation state machine** — owns all screen transitions (Clock ↔ Menu ↔ Settings)              |
+| `ui.c`                 | Theme init + delegates to `nav_init()`; also exports `ui_apply_screen_bg()`                       |
+| `nav.c`                | **Navigation state machine** — owns all screen transitions (Clock ↔ Menu ↔ Settings) via a shared `show_screen()` helper |
 | `clock_face_text.c`    | HH:MM:SS (DS-Digital 48) + DD/MM/YYYY (DS-Digital 16), internal 1s LVGL timer                     |
-| `status_bar.c`         | Tailscale(⇄)/NTP(syncing-only)/WiFi/battery icons; 30s LVGL timer for battery; reads BSP directly |
+| `status_bar.c`         | Tailscale(⇄)/NTP(syncing-only)/WiFi/battery icons; 30s LVGL timer for battery, published via `bsp_battery_read()` (one ADC conversion for mV/%/USB together) and `status_bar_register_battery_cb()` |
 | `prov_screen.c`        | QR code overlay shown during BLE provisioning                                                     |
-| `menu_screen.c`        | Menu list screen                                                                                  |
-| `settings_screen.c`    | Scrollable settings list with inline edit — 4 groups, 12 items (+ 4 section headers)              |
+| `menu_screen.c`        | Menu list screen — row order is `menu_row_t` (`menu_screen.h`)                                    |
+| `settings_screen.c`    | Scrollable settings list with inline edit — 4 groups, 12 items (+ 4 section headers); row order is `settings_row_t` (`settings_screen.h`), the single source of truth |
 | `device_info_screen.c` | System Info screen — 12 read-only rows, scrollable (5 visible), timers 1s/10s/30s                 |
+| `ui_list.c`            | Shared LVGL-dependent helpers: `ui_apply_scroll()`, `ui_timer_delete()`, and the layout constants used by every scrollable-list screen |
+| `ui_utils.c`           | Pure helpers with no LVGL/ESP-IDF dependency (`ui_circ_next/prev`, `fmt_bytes`) — symlinked into `test/test_pure_logic/`'s host-side Unity tests, so nothing here may `#include "lvgl.h"` |
 
 **Navigation flow:**
 
@@ -100,7 +139,7 @@ Clock → (BOOT long press / SELECT) → Menu → (SELECT) → Settings
                                             → (SELECT) → System Info
 Settings (12 items across 4 groups, 5 visible at a time, scrollable):
   — Display —   Theme, Brightness
-  — Clock —     Time Format (24H/12H), Show Seconds, Timezone
+  — Clock —     Time Format (24H/12H), Show Secs, Timezone
   — Sleep —     Sleep H, Sleep M, Sleep S, Sleep Now
   — Network —   NTP Resync, Reset WiFi, Provisioning
 UP/DOWN navigate, SELECT = enter edit / execute action, BACK = return to Menu
@@ -126,10 +165,20 @@ void nav_register_provisioning_cb(nav_action_cb_t cb); // wired by app_handlers_
 ```
 
 **Nav actions** map to buttons:
-| Action | Button | |--------|--------| | `NAV_ACTION_UP` | BOOT short press | | `NAV_ACTION_SELECT` | BOOT long
-press | | `NAV_ACTION_DOWN` | IO14 short press | | `NAV_ACTION_BACK` | IO14 long press |
+
+| Action              | Button            |
+|---------------------|-------------------|
+| `NAV_ACTION_UP`     | BOOT short press  |
+| `NAV_ACTION_SELECT` | BOOT long press   |
+| `NAV_ACTION_DOWN`   | IO14 short press  |
+| `NAV_ACTION_BACK`   | IO14 long press   |
 
 Clock face is swappable: replace `clock_face_text.c` with another implementation in `components/ui/CMakeLists.txt`.
+
+Every screen has a `*_destroy()` called from `nav.c`'s `destroy_current_screen()` before the parent
+object is deleted. `settings_screen_destroy()` additionally **flushes any pending debounced NVS
+write** — skipping it (e.g. a future caller that deletes the parent some other way) would lose the
+last unsaved edit.
 
 ### Button Actions
 
@@ -168,6 +217,16 @@ lvgl_port_lock(0);
 // LVGL calls here
 lvgl_port_unlock();
 ```
+
+`lvgl_port_lock(0)` waits `portMAX_DELAY` — it is not a try-lock. That's fine for the boot path
+(`main.c`) and for LVGL-timer contexts, but **not** for a callback that runs on the wifi task or the
+shared `esp_timer` task: `on_wifi_event()` runs synchronously from inside `fire_event()` on the wifi
+task, so an unbounded lock there could stall it invisibly to `wifi_manager_stop()`'s
+`STOP_TIMEOUT_MS`. Those callbacks use a **bounded** 50 ms lock instead
+(`wifi_event_lvgl_lock()` in `app_handlers.c`, and the identical pattern in `ts_poll_cb()` for the
+Tailscale poll timer), skip the paint on failure, and — critically — **never call
+`lvgl_port_unlock()` on the failure path**: a timed-out `lvgl_port_lock()` does not hold the mutex,
+so unlocking anyway is a real bug, not a no-op.
 
 **Never hardcode colors** (e.g., `lv_color_white()`). The UI supports Light and Dark themes — use theme-aware color
 access.
@@ -224,7 +283,13 @@ CONFIG_LV_USE_QRCODE=y                        # LVGL QR widget, off by default
 
 ## Timezone
 
-Set as `setenv("TZ", "UTC-7", 1)` in `app_main` — POSIX sign-inversion convention for UTC+7.
+User-configurable, not hardcoded. `settings_get_timezone_offset()` reads an `int8_t` UTC offset
+from NVS (default `+7`), editable live at Settings → Clock → Timezone (RANGE, −12..+14).
+`app_main` applies the stored offset at boot via `settings_apply_timezone()` (`src/main.c`), which
+builds the POSIX TZ string with `timezone_fmt()` — sign-inversion convention, so UTC+7 becomes
+`TZ="UTC-7"` — then calls `setenv("TZ", ...)` + `tzset()`. `timezone_fmt()` lives in
+`components/settings/timezone_fmt.c`, split out from `settings.c` specifically so it can build for
+the host-side `[env:native]` tests (`settings.c` itself pulls in `esp_log.h`/`nvs.h` and can't).
 
 ## Dependencies
 
@@ -239,7 +304,7 @@ Declared in `src/idf_component.yml`.
 
 Vendor submodule (in `vendor/`):
 
-- `vendor/microlink` — MicroLink Tailscale client (branch: `esp-idf-6x-compat`)
+- `vendor/microlink` — MicroLink Tailscale client (branch: `main`)
     - Symlinked into `components/microlink/` and `components/wireguard_lwip/`
     - Clone the repo with `--recursive` or run `git submodule update --init` after clone
 
