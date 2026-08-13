@@ -14,6 +14,7 @@
 
 #include "device_info_screen.h"
 #include "ui_utils.h"
+#include "ui_list.h"
 #include "bsp.h"
 #include "wifi_manager.h"
 #include "microlink.h"
@@ -28,14 +29,8 @@
 #include <stdio.h>
 #include <time.h>
 
-// ============================================================
-// Layout constants (match settings_screen.c)
-// ============================================================
-#define TITLE_Y       24
-#define LIST_Y_START  50
-#define LIST_ITEM_H   24
-#define LIST_X_PAD    16
-#define VALUE_X_RIGHT (-12)
+// Layout constants (TITLE_Y, LIST_Y_START, LIST_ITEM_H, LIST_X_PAD, VALUE_X_RIGHT) come from
+// ui_list.h — shared with settings_screen.c and menu_screen.c, which use identical values.
 
 // ============================================================
 // Row indices
@@ -78,36 +73,7 @@ static lv_timer_t *s_timer_30s = NULL;
 // ============================================================
 static void apply_scroll(void)
 {
-  for (int i = 0; i < ROW_COUNT; i++)
-  {
-    const bool visible = (i >= s_scroll && i < s_scroll + ROW_VISIBLE);
-    const int y = LIST_Y_START + (i - s_scroll) * LIST_ITEM_H;
-
-    if (s_name_labels[i])
-    {
-      lv_obj_set_y(s_name_labels[i], y);
-      if (visible)
-      {
-        lv_obj_remove_flag(s_name_labels[i], LV_OBJ_FLAG_HIDDEN);
-      }
-      else
-      {
-        lv_obj_add_flag(s_name_labels[i], LV_OBJ_FLAG_HIDDEN);
-      }
-    }
-    if (s_value_labels[i])
-    {
-      lv_obj_set_y(s_value_labels[i], y);
-      if (visible)
-      {
-        lv_obj_remove_flag(s_value_labels[i], LV_OBJ_FLAG_HIDDEN);
-      }
-      else
-      {
-        lv_obj_add_flag(s_value_labels[i], LV_OBJ_FLAG_HIDDEN);
-      }
-    }
-  }
+  ui_apply_scroll(s_name_labels, s_value_labels, ROW_COUNT, ROW_VISIBLE, s_scroll);
 }
 
 // ============================================================
@@ -401,21 +367,9 @@ void device_info_screen_scroll_down(void)
 
 void device_info_screen_destroy(void)
 {
-  if (s_timer_1s)
-  {
-    lv_timer_delete(s_timer_1s);
-    s_timer_1s = NULL;
-  }
-  if (s_timer_10s)
-  {
-    lv_timer_delete(s_timer_10s);
-    s_timer_10s = NULL;
-  }
-  if (s_timer_30s)
-  {
-    lv_timer_delete(s_timer_30s);
-    s_timer_30s = NULL;
-  }
+  ui_timer_delete(&s_timer_1s);
+  ui_timer_delete(&s_timer_10s);
+  ui_timer_delete(&s_timer_30s);
   for (int i = 0; i < ROW_COUNT; i++)
   {
     s_name_labels[i] = NULL;

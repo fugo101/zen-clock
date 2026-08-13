@@ -21,6 +21,7 @@
 
 #include "settings_screen.h"
 #include "ui_utils.h"
+#include "ui_list.h"
 #include "settings.h"
 #include "deep_sleep.h"
 #include "bsp.h"
@@ -84,14 +85,8 @@ static setting_item_t s_items[SETTINGS_ROW_COUNT] = {
     {.label = "Provisioning", .type = STYPE_ACTION},
 };
 
-// ============================================================
-// Layout constants
-// ============================================================
-#define TITLE_Y       24
-#define LIST_Y_START  50
-#define LIST_ITEM_H   24
-#define LIST_X_PAD    16
-#define VALUE_X_RIGHT (-12)
+// Layout constants (TITLE_Y, LIST_Y_START, LIST_ITEM_H, LIST_X_PAD, VALUE_X_RIGHT) come from
+// ui_list.h — shared with device_info_screen.c and menu_screen.c, which use identical values.
 
 // ============================================================
 // Private state
@@ -110,35 +105,7 @@ static lv_obj_t *s_edit_box = NULL;
 // ============================================================
 static void apply_scroll(void)
 {
-  for (int i = 0; i < SETTINGS_ROW_COUNT; i++)
-  {
-    bool visible = (i >= s_scroll && i < s_scroll + SETTINGS_VISIBLE);
-    int y = LIST_Y_START + (i - s_scroll) * LIST_ITEM_H;
-    if (s_name_labels[i])
-    {
-      lv_obj_set_y(s_name_labels[i], y);
-      if (visible)
-      {
-        lv_obj_remove_flag(s_name_labels[i], LV_OBJ_FLAG_HIDDEN);
-      }
-      else
-      {
-        lv_obj_add_flag(s_name_labels[i], LV_OBJ_FLAG_HIDDEN);
-      }
-    }
-    if (s_value_labels[i])
-    {
-      lv_obj_set_y(s_value_labels[i], y);
-      if (visible)
-      {
-        lv_obj_remove_flag(s_value_labels[i], LV_OBJ_FLAG_HIDDEN);
-      }
-      else
-      {
-        lv_obj_add_flag(s_value_labels[i], LV_OBJ_FLAG_HIDDEN);
-      }
-    }
-  }
+  ui_apply_scroll(s_name_labels, s_value_labels, SETTINGS_ROW_COUNT, SETTINGS_VISIBLE, s_scroll);
 }
 
 // ============================================================
@@ -364,11 +331,7 @@ static void persist_item(const int index)
 
 static void cancel_flush_timer(void)
 {
-  if (s_flush_timer)
-  {
-    lv_timer_delete(s_flush_timer);
-    s_flush_timer = NULL;
-  }
+  ui_timer_delete(&s_flush_timer);
 }
 
 static void flush_pending(void)

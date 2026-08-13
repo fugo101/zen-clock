@@ -4,10 +4,11 @@
 // Layout (320×170):
 //   Status bar (top, managed externally)
 //   Title "Menu" (y=24)
-//   Item list starting at y=48, each item 24px tall
+//   Item list starting at y=50, each item 24px tall
 
 #include "menu_screen.h"
 #include "ui_utils.h"
+#include "ui_list.h"
 
 // ============================================================
 // Menu items — only implemented features appear here
@@ -18,13 +19,9 @@ static const char *s_menu_labels[] = {
 };
 #define MENU_ITEM_COUNT (sizeof(s_menu_labels) / sizeof(s_menu_labels[0]))
 
-// ============================================================
-// Layout constants
-// ============================================================
-#define TITLE_Y      24
-#define LIST_Y_START 50
-#define LIST_ITEM_H  24
-#define LIST_X_PAD   16
+// Layout constants (TITLE_Y, LIST_Y_START, LIST_ITEM_H, LIST_X_PAD) come from ui_list.h — shared
+// with settings_screen.c and device_info_screen.c, which use identical values. Menu has no value
+// column, so it doesn't reference VALUE_X_RIGHT.
 
 // ============================================================
 // Private state

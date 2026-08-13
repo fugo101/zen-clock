@@ -49,106 +49,74 @@ static void destroy_current_screen(void)
   {
   case SCR_CLOCK:
     clock_face_destroy();
-    status_bar_destroy();
     break;
   case SCR_MENU:
     menu_screen_destroy();
-    status_bar_destroy();
     break;
   case SCR_SETTINGS_LIST:
   case SCR_SETTINGS_EDIT:
     settings_screen_destroy();
-    status_bar_destroy();
     break;
   case SCR_DEVICE_INFO:
     device_info_screen_destroy();
-    status_bar_destroy();
     break;
   }
+  // Every screen always creates a status bar, so destroying it is unconditional here rather than
+  // repeated in all four arms above.
+  status_bar_destroy();
+}
+
+// Shared by the 4 show_*_screen() functions below. `content_before_status_bar` is explicit rather
+// than inferred: LVGL z-order follows widget creation order, and the clock screen genuinely
+// creates its content before the status bar while the other three create the status bar first —
+// collapsing this without a caller-chosen order would silently flip which one draws on top.
+static void show_screen(void (*build_content)(lv_obj_t *), bool content_before_status_bar, const char *name)
+{
+  destroy_current_screen();
+
+  lv_obj_t *scr = lv_obj_create(NULL);
+  lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+  ui_apply_screen_bg(scr);
+
+  if (content_before_status_bar)
+  {
+    build_content(scr);
+    status_bar_create(scr);
+  }
+  else
+  {
+    status_bar_create(scr);
+    build_content(scr);
+  }
+
+  lv_obj_t *old = lv_screen_active();
+  lv_screen_load(scr);
+  if (old)
+  {
+    lv_obj_delete(old);
+  }
+
+  ESP_LOGI(tag, "Screen: %s", name);
 }
 
 static void show_clock_screen(void)
 {
-  destroy_current_screen();
-
-  lv_obj_t *scr = lv_obj_create(NULL);
-  lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
-  ui_apply_screen_bg(scr);
-
-  clock_face_create(scr);
-  status_bar_create(scr);
-
-  lv_obj_t *old = lv_screen_active();
-  lv_screen_load(scr);
-  if (old)
-  {
-    lv_obj_delete(old);
-  }
-
-  ESP_LOGI(tag, "Screen: Clock");
+  show_screen(clock_face_create, true, "Clock");
 }
 
 static void show_menu_screen(void)
 {
-  destroy_current_screen();
-
-  lv_obj_t *scr = lv_obj_create(NULL);
-  lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
-  ui_apply_screen_bg(scr);
-
-  status_bar_create(scr);
-  menu_screen_create(scr);
-
-  lv_obj_t *old = lv_screen_active();
-  lv_screen_load(scr);
-  if (old)
-  {
-    lv_obj_delete(old);
-  }
-
-  ESP_LOGI(tag, "Screen: Menu");
+  show_screen(menu_screen_create, false, "Menu");
 }
 
 static void show_settings_screen(void)
 {
-  destroy_current_screen();
-
-  lv_obj_t *scr = lv_obj_create(NULL);
-  lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
-  ui_apply_screen_bg(scr);
-
-  status_bar_create(scr);
-  settings_screen_create(scr);
-
-  lv_obj_t *old = lv_screen_active();
-  lv_screen_load(scr);
-  if (old)
-  {
-    lv_obj_delete(old);
-  }
-
-  ESP_LOGI(tag, "Screen: Settings");
+  show_screen(settings_screen_create, false, "Settings");
 }
 
 static void show_device_info_screen(void)
 {
-  destroy_current_screen();
-
-  lv_obj_t *scr = lv_obj_create(NULL);
-  lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
-  ui_apply_screen_bg(scr);
-
-  status_bar_create(scr);
-  device_info_screen_create(scr);
-
-  lv_obj_t *old = lv_screen_active();
-  lv_screen_load(scr);
-  if (old)
-  {
-    lv_obj_delete(old);
-  }
-
-  ESP_LOGI(tag, "Screen: System Info");
+  show_screen(device_info_screen_create, false, "System Info");
 }
 
 // ============================================================

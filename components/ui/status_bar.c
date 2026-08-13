@@ -2,6 +2,7 @@
 // ZenClock — Status bar (SNTP indicator + WiFi indicator + battery icon + percentage)
 
 #include "status_bar.h"
+#include "ui_list.h"
 #include "bsp.h"
 
 #include <stdio.h>
@@ -370,16 +371,8 @@ void status_bar_set_ts_status(ts_status_t status)
 
 void status_bar_destroy(void)
 {
-  if (s_bat_timer)
-  {
-    lv_timer_delete(s_bat_timer);
-    s_bat_timer = NULL;
-  }
-  if (s_bat_blink_timer)
-  {
-    lv_timer_delete(s_bat_blink_timer);
-    s_bat_blink_timer = NULL;
-  }
+  ui_timer_delete(&s_bat_timer);
+  ui_timer_delete(&s_bat_blink_timer);
   s_bat_icon = NULL;
   s_bat_pct = NULL;
   s_wifi_icon = NULL;
