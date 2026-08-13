@@ -15,6 +15,7 @@
 
 #include "clock_face.h"
 #include "ui.h"
+#include "ui_list.h"
 #include "settings.h"
 #include "fonts/lv_font_ds_digital_48.h"
 #include "fonts/lv_font_ds_digital_16.h"
@@ -165,11 +166,7 @@ void clock_face_create(lv_obj_t *parent)
 
 void clock_face_destroy(void)
 {
-  if (s_clock_timer)
-  {
-    lv_timer_delete(s_clock_timer);
-    s_clock_timer = NULL;
-  }
+  ui_timer_delete(&s_clock_timer);
   s_time_row = NULL;
   s_date_label = NULL;
   s_ampm_label = NULL;
