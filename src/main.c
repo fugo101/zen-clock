@@ -11,6 +11,7 @@
 // Must keep external linkage: the IDF startup task declares `extern void app_main(void);` and
 // calls it (freertos/app_startup.c:198). Making it static, as misc-use-internal-linkage suggests,
 // breaks the link. The check is not enabled in this repo's .clang-tidy — it comes from the IDE.
+// TEMP: CI build-cache verification touch — reverted in the next commit, does not ship.
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 void app_main(void)
 {
