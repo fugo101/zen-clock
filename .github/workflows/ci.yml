@@ -53,6 +53,16 @@ jobs:
       - name: Build firmware
         run: pio run -e lilygo-t-display-s3
 
+      - name: Check dependencies.lock is up to date
+        # The build above regenerates dependencies.lock if it doesn't match the manifests it was
+        # resolved from — so a diff here means a manifest changed without committing the result.
+        run: |
+          if ! git diff --exit-code dependencies.lock; then
+            echo "::error::dependencies.lock is stale — a manifest changed without regenerating it."
+            echo "Run 'rm -rf .pio/build && pio run -e lilygo-t-display-s3' locally and commit the result."
+            exit 1
+          fi
+
       - name: Static analysis (pio check)
         run: python3 scripts/pio_check.py
 

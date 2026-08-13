@@ -55,6 +55,6 @@ direct_dependencies:
 - espressif/network_provisioning
 - idf
 - lvgl/lvgl
-manifest_hash: 1614e93399e32c5ec455d6bb57630c28ea87dd6d1407dd0adbe1ddafd7f11e10
+manifest_hash: 80cafaea94e88890579ec28f3d1ba4d88376010c64a772cfa0046a7eb5ef2bf8
 target: esp32s3
 version: 2.0.0
