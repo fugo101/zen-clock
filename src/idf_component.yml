@@ -4,10 +4,14 @@ dependencies:
   espressif/esp_lvgl_port:
     version: "^2.9.0"
   lvgl/lvgl:
-    version: "^9"
+    # Floor raised to the version actually resolved/tested here (was "^9", still <10.0.0 either
+    # way — a bare caret already blocks a major-version jump, it just didn't pin the tested floor).
+    version: "^9.5.0"
     public: true
-  espressif/network_provisioning:
-    version: "^1.2.4"
+  ## network_provisioning is not used directly by this component — it comes in transitively via
+  ## the ble_provisioning component's own manifest (components/ble_provisioning/idf_component.yml).
   ## Required IDF version
   idf:
-    version: ">=6.0.0"
+    # Upper-bounded: this project carries ESP-IDF 6.x-specific patches (mbedTLS 4.x/TF-PSA-Crypto,
+    # -std=gnu23, vendor/microlink compat work) that a silent jump to IDF 7.x would invalidate.
+    version: ">=6.0.0,<7.0.0"
