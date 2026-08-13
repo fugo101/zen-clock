@@ -11,6 +11,7 @@ concurrency:
 jobs:
   release-please:
     runs-on: [ self-hosted, Linux, X64 ]
+    timeout-minutes: 10
     permissions:
       contents: write
       pull-requests: write
@@ -19,17 +20,25 @@ jobs:
       tag_name: ${{ steps.release.outputs.tag_name }}
       version: ${{ steps.release.outputs.version }}
     steps:
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - uses: googleapis/release-please-action@v5
         id: release
         with:
-          # PAT required: GITHUB_TOKEN-created PRs do not trigger downstream
-          # workflows, so CI would not run on Release PRs without a PAT.
-          token: ${{ secrets.PAT_TOKEN }}
+          # App token required: GITHUB_TOKEN-created PRs do not trigger downstream
+          # workflows, so CI would not run on Release PRs without it. Short-lived and
+          # scoped to this repo, unlike the PAT it replaces (which expires silently).
+          token: ${{ steps.app-token.outputs.token }}
 
   build-release:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
     runs-on: [ self-hosted, Linux, X64 ]
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:

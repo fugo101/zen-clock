@@ -352,6 +352,25 @@ silently does nothing.
 **Actions are pinned to moving major tags, not SHAs** — a maintainer decision, with
 `.github/dependabot.yml` proposing major bumps as PRs. Don't SHA-pin this repo.
 
+**Release Please runs on a GitHub App token, not `GITHUB_TOKEN` and no longer a PAT.**
+`GITHUB_TOKEN`-authored PRs don't trigger downstream workflows, so CI would never run on the
+Release PR itself — that's why a PAT was used originally. A PAT is a human's credential though: it
+expires silently, and when it does, Release Please just stops opening Release PRs with no error
+anyone sees. `actions/create-github-app-token@v3` mints a short-lived, repo-scoped token instead.
+Secrets: `RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY`.
+
+**The CI job's `name:` is the required-status-check contract.** `Build, Test & Analyze` is
+registered as the required status check on the `main` ruleset. Renaming the job without also
+updating the ruleset means the required check never reports again and every PR blocks forever.
+Consequence worth remembering: with exactly one self-hosted runner, a runner outage now blocks all
+merges, not just delays CI feedback.
+
+**`bootstrap-sha` was removed from `release-please-config.json` once tagged releases existed.**
+Release Please locates the last release from `.release-please-manifest.json` and the repo's tags, so
+the bootstrap SHA became vestigial past the first release — verified by checking that the next
+Release PR's `CHANGELOG.md` diff contained only commits after `v0.3.0`, not the full project
+history. If a future Release PR's changelog ever includes ancient commits, restore the line.
+
 **`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` stays on with no OTA code in the tree.**
 `partitions.csv` already pre-wires the dual-slot layout and OTA is a stated goal; disabling now to
 re-enable later costs more than leaving it. The residual risk is accepted knowingly.
