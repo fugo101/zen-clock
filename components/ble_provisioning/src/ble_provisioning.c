@@ -123,8 +123,21 @@ static void prov_event_handler(void *arg, // NOLINT(readability-non-const-parame
       break;
     }
     const auto cfg = (wifi_sta_config_t *) data;
-    const auto ssid = (const char *) cfg->ssid;
-    const auto pass = (const char *) cfg->password;
+    // cfg->ssid is uint8_t[32] with no room for a NUL — esp_wifi reads it bounded at 32 bytes and
+    // never requires termination (see network_provisioning's own handlers.c comment on this exact
+    // struct). But casting it straight to const char* and running strlen/%s on it is NOT safe: an
+    // exactly-32-char SSID has no terminator and ssid[32] sits immediately before password[64] in
+    // wifi_sta_config_t, so strlen keeps reading into the password. That leaks the plaintext
+    // password into this log line and into whatever ssid is stored under, and later corrupts the
+    // saved credential. Copy bounded with strnlen instead, matching manager.c's own read-back.
+    char ssid[sizeof(cfg->ssid) + 1];
+    char pass[sizeof(cfg->password) + 1];
+    const size_t ssid_len = strnlen((const char *) cfg->ssid, sizeof(cfg->ssid));
+    memcpy(ssid, cfg->ssid, ssid_len);
+    ssid[ssid_len] = '\0';
+    const size_t pass_len = strnlen((const char *) cfg->password, sizeof(cfg->password));
+    memcpy(pass, cfg->password, pass_len);
+    pass[pass_len] = '\0';
     ESP_LOGI(tag, "Credentials received: SSID=\"%s\"", ssid);
     if (s_callback)
     {

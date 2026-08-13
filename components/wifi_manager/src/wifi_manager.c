@@ -325,6 +325,9 @@ static bool try_connect_candidate(const wifi_ap_record_t *ap, const char *passwo
 
   wifi_config_t wifi_cfg = {0};
   size_t ssid_len = strlen(ssid);
+  // sta.ssid is uint8_t[32] — exactly the 802.11 max, with no reserved NUL byte. esp_wifi reads it
+  // bounded at 32 and does not require termination (network_provisioning's handlers.c documents
+  // the same contract for this exact field), so ">" without "- 1" is correct here, not a bug.
   if (ssid_len > sizeof(wifi_cfg.sta.ssid))
   {
     ssid_len = sizeof(wifi_cfg.sta.ssid);
@@ -334,9 +337,14 @@ static bool try_connect_candidate(const wifi_ap_record_t *ap, const char *passwo
   if (password && password[0] != '\0')
   {
     size_t pass_len = strlen(password);
-    if (pass_len > sizeof(wifi_cfg.sta.password))
+    // Unlike ssid, sta.password is uint8_t[64] sized as WPA's 63-char max PLUS a NUL byte
+    // (network_provisioning's handlers.c uses strlcpy for exactly this reason). Clamping at the
+    // full 64 would fill the buffer with no terminator and run into the next struct field
+    // (scan_method) on read-back. Not currently reachable — BLE provisioning already caps the
+    // password at 63 chars via strlcpy — but keep the bound correct regardless of caller.
+    if (pass_len > sizeof(wifi_cfg.sta.password) - 1)
     {
-      pass_len = sizeof(wifi_cfg.sta.password);
+      pass_len = sizeof(wifi_cfg.sta.password) - 1;
     }
     memcpy(wifi_cfg.sta.password, password, pass_len);
   }

@@ -233,7 +233,13 @@ static void update_battery(void)
     return;
   }
   char buf[20];
-  snprintf(buf, sizeof(buf), "%d%% (%dmV)", bsp_battery_get_percentage(), bsp_battery_get_voltage());
+  int mv;
+  int pct;
+  // One ADC conversion instead of two — also fixes a real bug: with two separate calls, C's
+  // unspecified argument evaluation order meant the printed % and mV could come from different
+  // samples and visibly disagree.
+  bsp_battery_read(&mv, &pct, NULL);
+  snprintf(buf, sizeof(buf), "%d%% (%dmV)", pct, mv);
   lv_label_set_text(s_value_labels[ROW_BATTERY], buf);
 }
 
