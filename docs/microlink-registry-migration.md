@@ -123,21 +123,34 @@ Sau migration `CONFIG_ML_*` đến từ `managed_components/fugo101__microlink/K
 
 `__project_component_dir()` (`tools/cmake/project.cmake:451`): nếu thư mục có `CMakeLists.txt` thì dừng ngay, coi nó là component; nếu không thì glob một tầng con. → Đây là lý do submodule `components/wireguard_lwip` phải trỏ **thẳng vào repo có CMakeLists.txt ở root** — không được lồng thêm một tầng nữa, và cũng là lý do quyết định "wireguard_lwip tách repo riêng, component root = repo root" ở trên vừa đúng kỹ thuật vừa đơn giản hơn thiết kế lồng cũ.
 
-### G. 🐛 Bug thật: `CONFIG_ML_ENABLE_CELLULAR=y` gần như chắc chắn không build được trên IDF 6.x
+### G. 🐛 Bug thật: `CONFIG_ML_ENABLE_CELLULAR=y` KHÔNG build được trên IDF 6.x — **đã verify cứng**
 
 `ESP_IDF_6X_COMPAT.md` §6: cellular sources bị đưa vào `if(CONFIG_ML_ENABLE_CELLULAR)` để *tránh* lỗi missing-header — workaround là **không compile chúng**, chứ không phải sửa dependency thật.
 
-Verify trên IDF 6.0.1: `driver/uart.h` chỉ nằm ở `esp_driver_uart`; `components/driver/CMakeLists.txt` **không** REQUIRES nó. **4/5 examples bật `CONFIG_ML_ENABLE_CELLULAR` trong `sdkconfig.defaults`** → 4/5 ô matrix sẽ đỏ ngay lần chạy CI đầu tiên. Fix:
-```cmake
-if(CONFIG_ML_ENABLE_CELLULAR)
-    list(APPEND SRCS "src/ml_cellular.c" "src/ml_at_socket.c")
-    list(APPEND REQUIRES esp_driver_uart esp_driver_gpio)   # ← thiếu
-endif()
-```
+Bằng chứng trên đúng IDF đang pin (`~/.platformio/packages/framework-espidf` = **6.0.1**, khớp `espressif32@7.0.1`):
+
+| Header | Chủ sở hữu duy nhất | Với `REQUIRES driver` |
+|---|---|---|
+| `driver/uart.h` | `components/esp_driver_uart/include/` | **không tới được** — `driver` không REQUIRES *cũng không* PRIV_REQUIRES `esp_driver_uart` |
+| `driver/gpio.h` | `components/esp_driver_gpio/include/` | **không tới được** — `esp_driver_gpio` chỉ nằm ở **PRIV_REQUIRES** của `driver`, private không lan truyền |
+
+`components/driver/CMakeLists.txt` (6.0.1) nguyên văn: `PRIV_REQUIRES esp_timer esp_mm esp_driver_gpio esp_ringbuf esp_pm` / `REQUIRES esp_hal_i2c esp_hal_twai esp_hal_touch_sens`. Include của cả hai header nằm ở `src/ml_cellular.c:24-25` (`uart.h` + `gpio.h`) và `src/ml_at_socket.c:30` (`uart.h`) → **phải khai cả hai**, không chỉ `esp_driver_uart`.
+
+**4/5 examples bật `CONFIG_ML_ENABLE_CELLULAR=y`** (`cellular_connect`, `cellular_heartbeat`, `failover_connect`, `rebind_test`; chỉ `basic_connect` là không) → 4/5 ô matrix đỏ ngay lần CI đầu. zen-clock không bị vì `# CONFIG_ML_ENABLE_CELLULAR is not set` — đó là lý do bug này sống sót đến giờ.
+
+⚠️ **Fix ban đầu SAI, đã tự sửa ở Phase 2 — xem Phát hiện J.** REQUIRES không được phép gate theo Kconfig; đoạn `if(CONFIG_ML_ENABLE_CELLULAR) ... list(APPEND REQUIRES ...)` dưới đây tưởng đúng nhưng **không hoạt động trong bất kỳ môi trường nào** (đã thử cả PlatformIO local và ESP-IDF Docker CI thật). Fix đúng: unconditional REQUIRES — xem Phát hiện J.
 
 ### H. `x25519.c` — diff KHÔNG phải divergence, mà là thiếu một fix upstream (đã ghi ở Context)
 
 Fork thẳng từ `smartalock/main` hôm nay đã có fix này miễn phí. Không replay dòng này khi dựng repo `wireguard-lwip` mới.
+
+### I. `allowed_source_ips[]` — xem Finding I ở "Phần 0"
+
+### J. 🐛 `REQUIRES`/`PRIV_REQUIRES` **không thể** gate theo `CONFIG_*` — bài học từ Phase 2
+
+Component-requirements expansion (quyết định `REQUIRES`/`PRIV_REQUIRES`, từ đó quyết định public include-dir nào lan truyền tới ai) chạy ở một pass CMake **trước khi** Kconfig được resolve. Chỉ `SRCS` mới được gate theo `CONFIG_*` (ở pass registration, chạy sau). Đây là hạn chế kiến trúc của ESP-IDF, không phải bug của PlatformIO hay của Docker CI — verify bằng cách thử CẢ HAI, cùng thất bại giống nhau (`driver/uart.h: No such file or directory` dù đã thêm `esp_driver_uart` vào REQUIRES có điều kiện).
+
+Fix đúng: đưa `esp_driver_uart`/`esp_driver_gpio` vào REQUIRES **vô điều kiện**, giống `driver`/`esp_driver_tsens` đã luôn vô điều kiện ngay phía trên — REQUIRES vốn phải thô hơn (coarser-grained) SRCS, đây là bình thường trong ESP-IDF, không phải thoả hiệp.
 
 ---
 
@@ -164,205 +177,45 @@ Fork thật từ `smartalock/wireguard-lwip`, clone tại `~/Projects/wireguard-
 
 ---
 
-## Phần 1 — Repo `fugo101/microlink`
+## Phần 1 — Repo `fugo101/microlink` — ✅ DONE
 
-### 1.1 `components/wireguard_lwip` giờ là submodule sạch, không symlink
+Transfer `fudio101/microlink` → org `fugo101` xong (quan hệ fork với `CamM2325/microlink` giữ nguyên), clone tại `~/Projects/microlink`, remote `origin` dùng SSH alias `github-fudio101` (gh mặc định resolve `github.com` trần — phải sửa tay lại, giống bài học ở wireguard-lwip). 6 PR sạch, squash-merge, đã merge vào `main`:
 
-```bash
-git rm --cached components/wireguard_lwip                 # bỏ symlink 120000 cũ (nếu còn)
-rm -rf components/microlink/components/wireguard_lwip     # bỏ hẳn bản copy lồng cũ
-git submodule add https://github.com/fugo101/wireguard-lwip.git components/wireguard_lwip
-```
-`examples/*/CMakeLists.txt` (`EXTRA_COMPONENT_DIRS "../../components"`) **không đổi** — vẫn glob ra hai component ngang hàng, giờ một cái là component thường (`components/microlink`), một cái là submodule (`components/wireguard_lwip`), cả hai đều có `CMakeLists.txt` ở đúng một tầng.
-
-⚠️ Submodule này **chỉ phục vụ build local/CI của chính repo microlink** (5 examples). Nó **không** phải nguồn sự thật cho consumer — zen-clock (và mọi consumer khác) luôn lấy `fugo101/wireguard_lwip` qua registry, độc lập hoàn toàn với submodule này. Không lặp lại vấn đề #3 ở Context (pin vô hình với build-cache) vì microlink's CI ở đây không có custom SCons cache như self-hosted runner của zen-clock — checkout fresh mỗi lần.
-
-Reference cần sửa: `CLAUDE.md` (mô tả `components/wireguard_lwip/` là submodule, không phải thư mục con), `components/microlink/CMakeLists.txt` — không đổi (`PRIV_REQUIRES wireguard_lwip` vẫn short name, xem Phát hiện A).
-
-### 1.2 `components/microlink/idf_component.yml`
-
-```yaml
-version: "3.0.0"  # x-release-please-version
-description: >-
-  Tailscale-protocol network stack for ESP32 (FuGo fork of CamM2325/microlink,
-  ESP-IDF 6.x only): ts2021 control plane, WireGuard data plane, DISCO/STUN,
-  DERP relay, optional 4G cellular with WiFi failover.
-url: https://github.com/fugo101/microlink
-repository: https://github.com/fugo101/microlink.git
-issues: https://github.com/fugo101/microlink/issues
-license: MIT
-tags: [tailscale, wireguard, vpn, networking, cellular]
-
-dependencies:
-  idf:
-    # Sàn 6.0: src/ml_noise.c include <mbedtls/private/chachapoly.h>, chỉ có trong
-    # cây TF-PSA-Crypto từ ESP-IDF 6.0. Trần 7.0: patch compat 6.x-specific.
-    version: ">=6.0,<7.0"
-  espressif/cjson:
-    version: "^1.7.19"
-  fugo101/wireguard_lwip:
-    # Repo riêng (fugo101/wireguard-lwip, fork thật từ smartalock/wireguard-lwip),
-    # release-please độc lập — số này KHÔNG liên quan gì đến version của microlink.
-    # Sửa tay khi cần nâng cấp; không có cơ chế tự sync giữa hai repo khác nhau.
-    version: "^1.0.0"
-```
-
-**`targets:` — bỏ hẳn.** Hard gate: manager từ chối cài trên target ngoài danh sách. Chỉ `esp32s3` được test thật. `gmo-pepabo` cũng publish `targets: []`. → Follow-up 3.1.0 sau khi CI xanh trên `esp32` + `esp32s3`.
-
-**`examples:` — không expose ở 3.0.0.** Registry chỉ auto-discover từ `<component>/examples/`; 5 example ở gốc repo, di chuyển sẽ phá `EXTRA_COMPONENT_DIRS` và tạo vòng lặp chicken-and-egg ở lần publish đầu.
-
-### 1.3 CI — `.github/workflows/ci.yml`
-
-Ba job, `actions/checkout@v7` (recursive submodules cho `components/wireguard_lwip`), không SHA-pin, `dependabot.yml` giống zen-clock.
-
-**Job `examples`** — matrix 5 examples × `{v6.0.1, release-v6.0}`, `fail-fast: false`, target `esp32s3`, `espressif/esp-idf-ci-action@v1`. `v6.0.1` khớp ESP-IDF bên trong `espressif32@7.0.1` mà zen-clock pin; `release-v6.0` là ô cảnh báo sớm, `continue-on-error: true`.
-
-**Job `config-variants`** — 5 examples đã phủ sẵn `ML_ENABLE_CELLULAR` (4/5), `ML_ENABLE_CONFIG_HTTPD` (5/5), `ML_ENABLE_NET_SWITCH` (failover_connect). Chỉ còn thiếu `zerocopy` (`CONFIG_ML_ZERO_COPY_WG=y`, 17 điểm ifdef + `ml_zerocopy.c`), `minimal` (tắt hết), `cellular-zerocopy` (giao của hai cờ). Overlay ở `ci/sdkconfig.ci.*`, copy vào thư mục example rồi build với `-DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.ci"` (truyền SDKCONFIG_DEFAULTS THAY THẾ ngầm định, phải liệt kê lại).
-⚠️ `esp-idf-ci-action` nội suy `command` vào `bash -c '…'` **nháy đơn** — chỉ dùng nháy kép trong chuỗi.
-
-**Job `manifests`** — `compote -W component pack` (thay `manifest lint` không tồn tại), cộng bước shell assert `version:` khớp `.release-please-manifest.json`.
-
-**Build không cần credential thật** — mọi credential là Kconfig string `default ""`, dùng như macro hợp lệ C.
-
-**Sửa kèm:** `examples/failover_connect/main/CMakeLists.txt` thiếu `REQUIRES` — set khớp 4 example còn lại, dù không ảnh hưởng chức năng (main không set REQUIRES thì IDF link toàn bộ), vì đây là ví dụ duy nhất sẽ không phát hiện nếu `microlink` rơi khỏi build.
-
-**Không có clang-format gate** (đã chốt — xem §1.4).
-
-### 1.4 clang-format — bỏ hẳn (đã xác nhận)
-
-```
-git diff --stat 216da33..HEAD -- components/   →  14 files changed, 125 insertions(+), 52 deletions(-)
-find components -name '*.c' -o -name '*.h' | xargs wc -l   →  22656
-```
-Fork chỉ đổi 0,55% lượng C/H mà nó ship (con số này đo trước khi tách `wireguard_lwip` ra repo riêng — sau khi tách, tỷ lệ còn thấp hơn nữa vì phần lớn LOC đó chính là `wireguard_lwip`). Format toàn repo phá `git cherry -v upstream/main main`, cơ chế chống double-apply mà `UPSTREAM_PRS.md` dựa vào. Không thêm `.clang-format`, không thêm CI job format nào.
-
-### 1.5 release-please (microlink, độc lập — không còn phức tạp monorepo)
-
-Đơn giản hơn nhiều so với thiết kế đã bỏ (2-package trong 1 repo): giờ chỉ **một package tại repo root**, tiếp nối đúng lịch sử `v2.1.0` cũ.
-
-```json
-{
-  "release-type": "simple",
-  "bump-minor-pre-major": false,
-  "bootstrap-sha": "<full SHA của bac7d62>",
-  "changelog-sections": [
-    { "type": "feat",     "section": "Features" },
-    { "type": "fix",      "section": "Bug Fixes" },
-    { "type": "perf",     "section": "Performance" },
-    { "type": "refactor", "section": "Refactoring" },
-    { "type": "docs",     "section": "Documentation" },
-    { "type": "compat",   "section": "ESP-IDF compatibility" },
-    { "type": "chore",    "section": "Miscellaneous", "hidden": true },
-    { "type": "style",    "section": "Styles",        "hidden": true },
-    { "type": "test",     "section": "Tests",         "hidden": true },
-    { "type": "ci",       "section": "CI",            "hidden": true },
-    { "type": "build",    "section": "Build",         "hidden": true }
-  ],
-  "packages": {
-    ".": {
-      "release-type": "simple",
-      "changelog-path": "CHANGELOG.md",
-      "extra-files": [
-        { "type": "generic", "path": "components/microlink/idf_component.yml" }
-      ]
-    }
-  }
-}
-```
-`.release-please-manifest.json`: `{".": "2.1.0"}`.
-
-**`extra-files` dùng `type: generic`, KHÔNG dùng `type: yaml`** — `generic-yaml.ts` tự ghi rằng nó *"reformat the document and removes all comments"* và có thể nuốt mất cấu trúc; `generic.ts` là line-based, chỉ thay substring semver đầu tiên trên dòng có `x-release-please-version`, giữ nguyên phần còn lại — comment và cấu trúc YAML sống sót. Dòng pin `fugo101/wireguard_lwip: "^1.0.0"` **không có annotation** — sửa tay khi cần nâng version, đúng như ghi trong §1.2.
-
-**Lịch sử commit không theo Conventional Commits:** 18 commit từ `v2.1.0` release-please parse được **con số 0**. Ba commit gần nhất là cherry-pick nguyên văn với subject của upstream và **không được rewrite** (rewrite là phá `git cherry`). Xử lý bằng `bootstrap-sha` = full SHA của `bac7d62`, không rewrite history. Land commit tái cấu trúc với footer `Release-As: 3.0.0` + `BREAKING CHANGE:` (ESP-IDF 6.x-only).
-
-**Từ nay trở đi: mọi commit trên `main` theo Conventional Commits, không ngoại lệ** — giống policy zen-clock (`.claude/skills/git-workflow/SKILL.md`). Bật squash-merge, PR title = commit message trên `main`, enforce bằng `amannn/action-semantic-pull-request`. Kể cả PR chỉ chứa cherry-pick từ upstream — PR title vẫn phải là Conventional Commit hợp lệ (ví dụ `fix(wireguard_lwip): don't pre-install unvalidated peer endpoints (upstream #21)`); nội dung cherry-pick bên trong nhánh feature (nếu giữ qua `git cherry-pick -x`) vẫn giữ nguyên author/message gốc, chỉ tầng squash-lên-main được chuẩn hoá. Đánh đổi: squash đổi patch-id, `git cherry -v upstream/main main` không còn khớp chính xác sau squash — bù bằng lớp thứ hai đã có sẵn (`git log --grep="cherry picked from"` / trailer `Upstream-PR:`).
-
-### 1.6 CD — publish lên registry
-
-Không còn cần trick "thứ tự trong 1 step CI" như thiết kế cũ — `wireguard_lwip` giờ ở repo khác, release/publish theo nhịp riêng của nó. microlink chỉ cần đảm bảo: **tại thời điểm publish, version `wireguard_lwip` mà nó pin (`^1.0.0`) đã tồn tại trên registry** — điều này đúng theo định nghĩa, vì pin chỉ được viết/sửa sau khi thấy version đó đã publish.
-
-```yaml
-  publish-component:
-    needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
-    permissions:
-      contents: read
-      id-token: write     # BẮT BUỘC: action mint OIDC token đổi lấy registry token
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
-      - uses: espressif/upload-components-ci-action@v2
-        with:
-          namespace: fugo101
-          components: "microlink:components/microlink"
-```
-Thêm job `dry_run: "true"` trên PR để bắt manifest hỏng trước khi cắt tag.
-
-### 1.7 Upstream drift watcher (chiều `CamM2325/microlink`)
-
-`.github/workflows/upstream-drift.yml`, cron thứ Hai hàng tuần + `workflow_dispatch`. Một issue duy nhất, update tại chỗ, tự close khi sạch.
-
-Logic: `git cherry -v HEAD upstream/main | sed -n 's/^+ //p'` cho commit upstream ta thiếu, cộng `gh pr list --repo CamM2325/microlink --state open` lọc bỏ số PR đã ghi trong `UPSTREAM_PRS.md`.
-
-Trạng thái hiện tại: `git rev-list --left-right --count upstream/main...HEAD` → `0 15`, `UPSTREAM_PRS.md` đã ghi #20–#25, #3, #14 → lần chạy đầu sẽ im lặng hoàn toàn.
-
-### 1.8 Docs
-
-| File | Sửa |
+| PR | Commit |
 |---|---|
-| `README.md:52` | `ESP-IDF v5.0 or later (tested with v5.3)` → **`ESP-IDF 6.0.x (bắt buộc; 5.x không hỗ trợ)`**, kèm lý do `<mbedtls/private/chachapoly.h>` |
-| `README.md` | Thêm mục Installation dẫn đầu bằng recipe registry; mục Provenance nêu rõ `wireguard_lwip` giờ là submodule trỏ `fugo101/wireguard-lwip` (fork thật từ Daniel Hope), không còn "vendored copy" |
-| `ESP_IDF_6X_COMPAT.md:3` | `Branch: esp-idf-6x-compat` sai — đã merge vào `main` |
-| `ESP_IDF_6X_COMPAT.md:129-137` | Thay recipe submodule+symlink cũ bằng recipe registry + ghi chú submodule `wireguard_lwip` mới |
-| `update.sh` | Xoá — `UPSTREAM_PRS.md` đã ghi nó nguy hiểm |
-| `THIRD_PARTY.md` | Mục `wireguard_lwip` viết lại hoàn toàn: trỏ sang repo `fugo101/wireguard-lwip`, không cần audit table thủ công nữa (git log của repo mới tự làm việc đó) |
+| [#8](https://github.com/fugo101/microlink/pull/8) | `build: replace wireguard_lwip symlink chain with a clean submodule` — trỏ `fugo101/wireguard-lwip.git`, không lồng, không symlink |
+| [#9](https://github.com/fugo101/microlink/pull/9) | `fix: declare esp_driver_uart/esp_driver_gpio for the cellular build` — **fix này SAI, xem #11** |
+| [#10](https://github.com/fugo101/microlink/pull/10) | `build: add idf_component.yml and manifest validation CI` — version 3.0.0, pin `fugo101/wireguard_lwip: "^1.0.0"`; job CI `manifest validation` đầu tiên tồn tại trong repo |
+| [#11](https://github.com/fugo101/microlink/pull/11) | `ci: add examples build matrix, config variants, and upstream drift watcher` — build matrix thật đầu tiên chạy, bắt được 2 bug thật (xem Phát hiện J + đoạn dưới), cả hai fix nằm trong PR này |
+| [#12](https://github.com/fugo101/microlink/pull/12) | `feat!: add release-please, formalize ESP-IDF 6.x-only as a breaking change` — `Release-As: 3.0.0` + `BREAKING CHANGE:`, docs rewrite (README/ESP_IDF_6X_COMPAT/UPSTREAM_PRS, `update.sh` xoá) |
+
+**PR #8, #9 phải merge tay (admin), #10+ merge thường.** Tự tạo ruleset "Protect main" ngay sau transfer (bắt chước wireguard-lwip) NHƯNG làm SAI thứ tự — wireguard-lwip chỉ thêm ruleset ở CUỐI (sau khi CI đã tồn tại), còn ở đây ruleset (với required check `manifest validation`) được tạo TRƯỚC khi CI tồn tại, block chính PR đầu tiên. Sửa bằng cách merge tay PR #8/#9 (được user chấp thuận qua GitHub UI), rồi gộp #10 (idf_component.yml + job `manifest validation` tối thiểu) thành 1 PR tự chứa được check của chính nó — từ #10 trở đi mọi PR merge thường, không cần tay. **Bài học cho lần sau: tạo ruleset yêu cầu required-status-check SAU KHI CI đã tồn tại, không phải ngay sau transfer.**
+
+**Hai bug thật CI thật bắt được ngay lần chạy đầu (PR #11), cả hai fix trong cùng PR đó:**
+1. Fix của PR #9 (REQUIRES gate theo `CONFIG_ML_ENABLE_CELLULAR`) **không hoạt động** — verify bằng cả PlatformIO local lẫn ESP-IDF Docker CI thật, cùng lỗi `driver/uart.h: No such file or directory`. Nguyên nhân kiến trúc: xem Phát hiện J. Fix đúng: REQUIRES vô điều kiện.
+2. Bug tiền-tồn-tại không liên quan đến migration, chỉ chưa từng có CI để bắt: `ml_config_httpd.c` so sánh `old_count` (uint8_t, max 255) trực tiếp với `ML_CONFIG_MAX_ALLOWED_PEERS` (Kconfig, default 512) → `-Werror=type-limits` vì 255 luôn ≤ 512. Fix: widen `old_count` thành `uint16_t` trước khi so sánh.
+
+**Release PR đã mở tự động:** [#13](https://github.com/fugo101/microlink/pull/13) `chore(main): release 3.0.0`, changelog đúng, `.release-please-manifest.json` → `3.0.0`. **CHƯA merge** — chờ Phase 3 (namespace) + Phase 4 (thứ tự publish).
+
+Branch protection cuối cùng: ruleset "Protect main" đủ rule (deletion/non-fast-forward/PR-squash-only/linear-history/required-check `manifest validation`/admin bypass "always") — đúng target state, chỉ khác thứ tự tạo so với kế hoạch ban đầu (xem bài học trên).
 
 ---
 
-## Phần 2 — Repo zen-clock
+## Phần 2 — Repo zen-clock — chuẩn bị xong (2.7), CHƯA merge
 
-Không đổi nhiều so với thiết kế trước — zen-clock luôn tiêu thụ `fugo101/microlink` qua registry, tách repo `wireguard_lwip` không ảnh hưởng phía này (vẫn là dependency transitive, ẩn hoàn toàn khỏi zen-clock).
+Nhánh `build/microlink-registry-migration` (1 commit `feat!: migrate microlink + wireguard_lwip to the ESP Component Registry`), đã push lên `fugo101/zen-clock`, **không mở PR, không merge** — đúng như kế hoạch 2.7, vì `fugo101/microlink`/`fugo101/wireguard_lwip` chưa publish (namespace chưa duyệt). `pio run` trên nhánh này sẽ fail ở bước resolve dependency cho tới khi Phase 4 xong.
 
-### 2.1 Gỡ submodule + symlink
+Nội dung commit khớp đúng §2.1-2.3 đã phác thảo, không có điều chỉnh nào so với plan:
+- Gỡ `.gitmodules`, `vendor/microlink`, symlink `components/microlink` + `components/wireguard_lwip`.
+- `src/idf_component.yml` thêm `fugo101/microlink: "^3.0.0"` + comment `override_path` local-only.
+- `platformio.ini` → `check_src_filters = +<src/*> +<components/*>` (bỏ 2 exclude cũ, không còn cần vì thư mục không tồn tại nữa).
+- `scripts/format.py` → bỏ `"vendor"`, `"components/microlink"`, `"components/wireguard_lwip"`, giữ `"managed_components"`.
+- CI (`ci.yml` + `release-please.yml`) → bỏ `submodules: recursive`, thêm gate `override_path` (đặt trước gate docs-only skip, dùng `git ls-files` không phải `find`).
+- Docs: `CLAUDE.md` (bảng component, mục Dependencies, cảnh báo short-name REQUIRES + `sdkconfig.cm`), `README.md` (bỏ `--recursive`), `THIRD_PARTY.md` (bỏ hẳn phần vendored-source audit thủ công, gộp vào bảng managed components), `docs/DECISIONS.md` (sửa cảnh báo `fugo101` vs `fudio101` — microlink giờ CŨNG ở `fugo101` sau transfer, không còn khác account với zen-clock).
 
-```bash
-git submodule deinit -f vendor/microlink      # còn .gitmodules thì mới deinit được
-git rm components/microlink components/wireguard_lwip
-git rm vendor/microlink
-git rm .gitmodules                            # chỉ có 1 entry → xoá cả file
-git config --local --remove-section submodule.vendor/microlink 2>/dev/null || true
-rm -rf .git/modules/vendor .git/modules/_microlink   # CÓ HAI thư mục — _microlink là rác từ path cũ
-```
-⚠️ `git rm vendor/microlink` **xoá working tree** → phải clone và push `~/Projects/microlink` xong trước.
-⚠️ Clone cũ của người khác **và workspace của self-hosted runner** vẫn còn `vendor/microlink` + `.git/modules/vendor`; `git pull` không dọn. Cần chạy tay một lần.
+**Verify local đã chạy, pass:** `scripts/check_secrets.py`, `scripts/format.py --check`, `pio test -e native`. **Chưa chạy** (và chưa thể chạy): `pio run` full build, `pio_check.py`, upload thật — tất cả chờ Phase 4 publish xong.
 
-### 2.2 `src/idf_component.yml`
-
-```yaml
-  fugo101/microlink:
-    version: "^3.0.0"
-    public: true
-    # CHỈ DÙNG LOCAL — không bao giờ commit:
-    #   override_path: "../../microlink/components/microlink"
-    # Path tính theo thư mục CHỨA FILE NÀY (src/), không phải project root, và phải trỏ
-    # vào thư mục COMPONENT (có CMakeLists.txt), không phải repo root.
-```
-`fugo101/wireguard_lwip` vào gián tiếp qua manifest của microlink — **không khai ở đây**.
-
-### 2.3 Còn lại
-
-- **CMakeLists — không đổi** (Phát hiện A). Chỉ thêm comment cảnh báo.
-- **`platformio.ini`** → `check_src_filters = +<src/*> +<components/*>`. `managed_components/` không lọt scope vì đây là allow-list dựng từ base rỗng.
-- **`scripts/format.py`** → bỏ `"vendor"`, `"components/microlink"`, `"components/wireguard_lwip"`; **giữ `"managed_components"`** — nó chuyển từ thừa thành load-bearing.
-- **CI** → bỏ `submodules: recursive` ở cả hai workflow, **giữ `fetch-depth: 0`**. Thêm gate chặn `override_path`:
-  ```bash
-  git ls-files '*idf_component.yml' | xargs -r grep -nE '^[[:space:]]*override_path[[:space:]]*:'
-  ```
-  Dùng `git ls-files` (không phải `find`) để `managed_components/**` ngoài scope; regex neo vào YAML key nên dòng comment ở §2.2 không bị bắt. Đặt **trước** gate docs-only skip.
-- **Build-cache key giữ nguyên** nhưng nay đã *đúng*: version + `component_hash` của microlink nằm trong `dependencies.lock` mà key đã hash. Nêu rõ trong PR — nó bịt lỗ hổng ở Context #3.
-- ⚠️ **`dependencies.lock` phải commit cùng commit đó**, không thì gate `git diff --exit-code` fail 100%.
-- **Docs**: `CLAUDE.md` (bảng component, mục Dependencies, 2 cảnh báo mới về short-name REQUIRES và `sdkconfig.cm`), `README.md` (xoá hẳn callout `--recursive`), `THIRD_PARTY.md` (giữ nguyên attribution BSD-3, cập nhật đường link sang `fugo101/wireguard-lwip` — giờ là fork thật, dễ trỏ hơn), `docs/DECISIONS.md` (entry mới + sửa cảnh báo `fugo101` vs `fudio101` ở dòng 449).
+**Việc phát sinh ngoài kế hoạch:** `docs/microlink-registry-migration.md` (chính file này) hoá ra **chưa từng được commit** ở phiên trước — vẫn là untracked file. Đã commit qua PR riêng ([fugo101/zen-clock#41](https://github.com/fugo101/zen-clock/pull/41), `docs: add the microlink registry migration plan`), merge thường, xong trước khi tạo nhánh 2.7 (đã rebase nhánh 2.7 lên sau khi merge để tránh conflict/mất đồng bộ).
 
 ### GitHub auth constraint
 
@@ -378,17 +231,9 @@ rm -rf .git/modules/vendor .git/modules/_microlink   # CÓ HAI thư mục — _m
 
 Chi tiết đầy đủ (PR, commit, phát hiện, điều chỉnh so với phác thảo) đã gộp vào "Phần 0" ở trên.
 
-### Phase 2 — Chuẩn bị `microlink`
+### Phase 2 — Chuẩn bị `microlink` — ✅ DONE
 
-| # | Việc |
-|---|---|
-| 2.1 | Thay symlink cũ bằng submodule sạch `components/wireguard_lwip` → `fugo101/wireguard-lwip.git` (§1.1) |
-| 2.2 | `fix: declare esp_driver_uart/esp_driver_gpio for the cellular build` (Phát hiện G) — **phải trước CI**, verify bằng `idf.py build` local ở `examples/cellular_connect` |
-| 2.3 | `build: add idf_component.yml` (version 3.0.0, pin `fugo101/wireguard_lwip: "^1.0.0"`), verify bằng `compote component pack` local |
-| 2.4 | `ci: build matrix, config variants, manifest validation` (không clang-format) |
-| 2.5 | `ci: upstream drift watcher` (chiều CamM2325) |
-| 2.6 | `feat!: … Release-As: 3.0.0` + release-please config + docs rewrite |
-| 2.7 | Chuẩn bị sẵn (nhưng CHƯA áp dụng) toàn bộ thay đổi phía zen-clock — giữ trên branch riêng, không merge tới khi Phase 4 có package thật để trỏ vào |
+Chi tiết đầy đủ (PR, commit, 2 bug thật CI bắt được, bài học ruleset-trước-CI, nhánh 2.7 của zen-clock) đã gộp vào "Phần 1" và "Phần 2" ở trên.
 
 ### Phase 3 — Xin quyền + hạ tầng thủ công (bottleneck thời gian, làm song song Phase 1+2)
 
@@ -425,11 +270,15 @@ Chi tiết đầy đủ (PR, commit, phát hiện, điều chỉnh so với phá
 
 **wireguard-lwip** — ✅ đã chạy, pass (`compote manifest lint` + `compote -W component pack`, archive sạch). Xem "Phần 0".
 
-**microlink** (Phase 2, chạy local trước khi viết CI):
+**microlink** (Phase 2, chạy local trước khi viết CI). Không có `idf.py` → dùng wrapper PlatformIO trong scratchpad (xem điều chỉnh #2 ở Phase 2) và venv cho `compote`:
 ```bash
-cd examples/basic_connect    && idf.py build
-cd examples/cellular_connect && idf.py build    # xác nhận bug ở Phát hiện G
-compote -W component pack --project-dir components/microlink --name microlink
+# build: project pio tạm, symlink components/{microlink,wireguard_lwip}, main+sdkconfig.defaults
+# copy từ examples/<tên>; chạy 2 lần cho cellular_connect (trước/sau fix 2.2) và 1 lần basic_connect
+pio run -e esp32s3-microlink-example
+
+python3 -m venv "$SCRATCH/venv" && "$SCRATCH/venv/bin/pip" -q install idf-component-manager
+"$SCRATCH/venv/bin/compote" manifest lint components/microlink/idf_component.yml
+"$SCRATCH/venv/bin/compote" -W component pack --project-dir components/microlink --name microlink
 ```
 
 **zen-clock** (Phase 5):
@@ -463,12 +312,13 @@ pio run -t upload && pio device monitor
 
 ## Điểm chưa verify được / cần quyết định
 
-1. **Bug cellular (Phát hiện G)** là suy luận tĩnh, chưa chạy thật — chạy `idf.py build` ở `examples/cellular_connect` để xác nhận trước khi viết matrix.
-2. **Namespace `fugo101` chưa tồn tại** (HTTP 404 đã kiểm tra), cần Espressif duyệt tay — long pole của cả kế hoạch.
-3. **`~/Projects/microlink` chưa tồn tại**; cả hai repo mới (`wireguard-lwip`, và transfer của `microlink`) đều chưa được tạo/transfer.
+1. ~~Bug cellular (Phát hiện G)~~ — **đã verify cứng bằng CI thật (Docker ESP-IDF), không chỉ suy luận tĩnh** — nhưng fix ban đầu SAI (REQUIRES gate theo Kconfig không hoạt động, xem Phát hiện J), đã tự phát hiện và sửa trong PR #11.
+2. **Namespace `fugo101` chưa tồn tại** (kiểm tra lại 2026-08-14: vẫn HTTP 404), cần Espressif duyệt tay — long pole của cả kế hoạch. **Việc của user, nên nộp ngay.**
+3. ~~`~/Projects/microlink` chưa tồn tại~~ — đã transfer + clone xong, xem "Phần 1".
 4. ~~clang-format~~ — đã chốt: bỏ hẳn (§1.4).
 5. ~~Copyright `fudio101`~~ — đã chốt: giữ nguyên, không đổi sang FuGo (áp dụng cho `microlink`; `wireguard-lwip` giữ nguyên LICENSE gốc của Daniel Hope, không có dòng copyright FuGo nào để cân nhắc).
 6. ~~Token GitHub thiếu scope `workflow`~~ — đã refresh, xem GitHub auth constraint.
-7. **IDF 6.1 có phá fork không** — trần `<7.0` là canh bạc. Thêm `espressif/idf:release-v6.1` làm ô matrix thứ ba (`continue-on-error`) sẽ biến canh bạc thành dữ liệu. *(Phase 2, chưa làm)*
+7. **IDF 6.1 có phá fork không** — trần `<7.0` vẫn là canh bạc, CHƯA thêm ô matrix `release-v6.1`. Cái đã thêm là `release-v6.0` (early-warning ngược, cho biết IDF 6.0-generic có ổn không) — pass sạch ở PR #11, không phải dữ liệu cho câu hỏi 6.1. *(Còn mở, ưu tiên thấp — không chặn publish)*
 8. ~~Ranh giới PR replay~~ — đã thực thi, gộp thành 5 commit thay vì 9 nhóm phác thảo, xem "Phần 0".
 9. ~~`gh repo fork` có hoạt động đúng không~~ — có, `gh repo fork smartalock/wireguard-lwip --org fugo101` chạy thành công.
+10. **`docs/microlink-registry-migration.md` từng bị bỏ sót, chưa commit từ phiên trước** — đã phát hiện + sửa ở Phase 2 (xem "Phần 2"). Bài học: sau mỗi lần dùng `Edit`/`Write` cho file plan trong repo, luôn `git status` để xác nhận nó đã thực sự nằm trong git, không chỉ nằm trên đĩa.
