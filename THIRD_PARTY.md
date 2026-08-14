@@ -24,7 +24,11 @@ when a vendored copy drifts from its upstream.
 fast-forward.** The most visible divergence: the fork replaces upstream's single
 `allowed_ip`/`allowed_mask` pair with an `allowed_source_ips[WIREGUARD_MAX_SRC_IPS]` array, plus
 ESP-IDF 6.x / GCC 15 patches (documented in `vendor/microlink/ESP_IDF_6X_COMPAT.md`) and `WG_DEBUG`
-logging throughout.
+logging throughout. **2026-08-14:** also carries a fix absorbed from
+[CamM2325/microlink#20](https://github.com/CamM2325/microlink/pull/20) (open, unmerged upstream —
+see the microlink section below): decrypted RX is handed to `device->netif->input` instead of
+calling `ip_input()` directly, so the lwIP core is only ever entered from `tcpip_thread` — fixes a
+pbuf double-free crash under sustained TCP load through the tunnel.
 
 **Upstream review, 2026-08-10** — upstream has three commits after the 2022 work. All substance is
 already present in our copy; nothing to port:
@@ -59,7 +63,7 @@ git log --oneline smartalock/master -- src/
 | **Fork used** | https://github.com/fudio101/microlink (branch `main`) |
 | **Author** | Cameron Malone |
 | **License** | MIT — `vendor/microlink/LICENSE` |
-| **Pinned at** | `289a3f9` (`v2.1.0-9-g289a3f9`) |
+| **Pinned at** | `bac7d62` |
 
 **2026-08-12:** the fork's `esp-idf-6x-compat` branch (`main` + one ESP-IDF 6.x/mbedTLS 4.x/GCC 15
 compat commit) was fast-forward merged into `main` and never diverged again — `.gitmodules` now
@@ -69,6 +73,25 @@ own examples, false for this project, which tracks sdkconfig and uses `scripts/c
 instead), and `wireguard_lwip/README.md` gained the divergence warning + upstream-check procedure
 directly in the fork. A third fix landed the same day: `ESP_IDF_6X_COMPAT.md` no longer documents
 `board_build.esp-idf.sdkconfig_extra`, which is not a real PlatformIO option.
+
+**2026-08-14:** upstream (`CamM2325/microlink`) has been inactive for ~5 months (last commit
+2026-03-17) with zero maintainer engagement on any of its 6 open PRs. Absorbed three of them as
+cherry-picks (author attribution preserved via `git cherry-pick -x`), since ZenClock is an
+inbound-only tailnet member and these are exactly the reachability/registration-diagnostic paths
+that matter for that use case:
+
+- [#21](https://github.com/CamM2325/microlink/pull/21) (snowpaper) — a CGNAT peer (e.g. phone on
+  mobile data reaching this device) got a one-way tunnel: inbound over DERP, every outbound packet
+  fired at an unvalidated advertised endpoint into a black hole. Now blank at peer-add, DERP until
+  a DISCO pong validates a direct path — matches Tailscale's own semantics.
+- [#20](https://github.com/CamM2325/microlink/pull/20) (snowpaper) — see the `wireguard_lwip`
+  section above.
+- [#23](https://github.com/CamM2325/microlink/pull/23) (letalvoj) — a rejected Tailscale auth key
+  used to fail silently into a misleading `MapResponse ... node not found`; now logs the actual
+  `RegisterResponse` error.
+
+Full absorption record, including what was deliberately skipped and why, lives in
+`vendor/microlink/UPSTREAM_PRS.md`.
 
 ---
 
