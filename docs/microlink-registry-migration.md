@@ -235,14 +235,57 @@ Chi tiết đầy đủ (PR, commit, phát hiện, điều chỉnh so với phá
 
 Chi tiết đầy đủ (PR, commit, 2 bug thật CI bắt được, bài học ruleset-trước-CI, nhánh 2.7 của zen-clock) đã gộp vào "Phần 1" và "Phần 2" ở trên.
 
-### Phase 3 — Xin quyền + hạ tầng thủ công (bottleneck thời gian, làm song song Phase 1+2)
+### Phase 3 — Xin quyền + hạ tầng thủ công — 🟡 phần tự động hoá xong, chờ 3.1 (việc của user)
 
-| # | Việc |
+| # | Việc | Trạng thái |
+|---|---|---|
+| 3.1 | **Xin duyệt namespace `fugo101`** qua Namespace Request Form tại <https://components.espressif.com/settings/permissions/> — không self-serve, Espressif duyệt tay, lead time không biết trước, kết quả thông báo qua email + hiện trên chính trang đó | ⛔ **CHƯA nộp** (verify 2026-08-14, xem dưới). **Việc của user — chặn 3.4 + toàn bộ Phase 4/5.** |
+| 3.2 | Transfer `fudio101/microlink` → org `fugo101`; `git remote set-url` lại SSH alias | ✅ xong ở Phase 2 |
+| 3.3 | release-please GitHub App + secret trên cả hai repo mới | ✅ xong — **không cần làm gì thêm**, xem dưới |
+| 3.4 | Sau khi namespace được duyệt: tạo 2 component trong registry UI, gắn trusted uploader (OIDC) cho từng cái | ⛔ chặn bởi 3.1. Giá trị chính xác cần điền: xem bảng dưới |
+
+#### 3.3 — đã xong từ trước, verify tường minh (2026-08-14)
+
+Không cần cài App hay set secret gì thêm: hạ tầng release đã sẵn ở **tầng org**, nên hai repo mới thừa hưởng tự động.
+
+| Hạng mục | Giá trị thật |
 |---|---|
-| 3.1 | **Xin duyệt namespace `fugo101`** tại components.espressif.com/settings/permissions — ⚠️ không self-serve, Espressif duyệt tay, lead time không biết trước. **Nộp đơn ngay, không chờ Phase 1/2 xong.** |
-| 3.2 | Transfer `fudio101/microlink` → org `fugo101`; `git remote set-url` lại SSH alias |
-| 3.3 | Cài release-please GitHub App lên cả hai repo mới; set secret |
-| 3.4 | Sau khi namespace được duyệt: tạo 2 component (`microlink`, `wireguard_lwip`) trong registry UI, gắn trusted uploader (OIDC) cho từng cái |
+| GitHub App | `fugo-release-bot`, installation id `145217510` trên org `fugo101`, `repository_selection = all` → repo mới tự động có quyền, không cần thêm tay |
+| Secret | **Org-level**, visibility `ALL`: `RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY` (+ `PAT_TOKEN` không dùng ở đây) |
+| Repo-level secret | **Không có cái nào** ở cả `microlink`, `wireguard-lwip`, `zen-clock` — đây là bình thường, đừng "sửa" bằng cách thêm bản sao repo-level |
+| Bằng chứng chạy thật | Job `release-please` (`push main`) **success** ở cả hai repo → Release PR được tạo: `wireguard-lwip` [#7](https://github.com/fugo101/wireguard-lwip/pull/7) `chore(main): release 1.0.0`, `microlink` [#13](https://github.com/fugo101/microlink/pull/13) `chore(main): release 3.0.0` |
+
+⚠️ Nếu một phiên sau chạy `gh secret list --repo ...` và thấy trống rồi kết luận "3.3 chưa làm" → **sai**. Phải kiểm `gh secret list --org fugo101` và `gh api /orgs/fugo101/installations`.
+
+#### Cách kiểm namespace đã tồn tại chưa — endpoint đúng
+
+`https://components.espressif.com/api/namespaces/<ns>` **không phải endpoint thật** — nó trả `404 NotFound` cho *mọi* namespace, kể cả `espressif`. Dùng cách này thay thế:
+
+```bash
+curl -s "https://components.espressif.com/api/components?namespace=fugo101"
+# chưa duyệt : {"error":"NamespaceNotFoundError","messages":["Namespace not found."]}   [404]
+# đã duyệt   : JSON array các component (rỗng nếu chưa tạo component nào)
+```
+Đối chứng đã chạy: `gmo-pepabo` → `200` + array thật; `fugo101`, `fudio101`, và một tên bừa cùng trả `NamespaceNotFoundError` → **`fugo101` thật sự chưa tồn tại, không phải endpoint sai.**
+
+#### 3.4 — giá trị chính xác cần điền (chuẩn bị sẵn, làm ngay khi namespace được duyệt)
+
+Registry UI: username dropdown → **Permissions** → chọn namespace `fugo101` → bảng `Components` nút `+` để tạo component → click tên component → bảng `Trusted Uploaders` nút `+`.
+
+| Component cần tạo | Trusted Uploader → Repository | Branch | Environment |
+|---|---|---|---|
+| `wireguard_lwip` | `fugo101/wireguard-lwip` — ⚠️ **repo tên gạch NGANG**, component tên gạch DƯỚI, hai thứ khác nhau | để trống | để trống |
+| `microlink` | `fugo101/microlink` | để trống | để trống |
+
+Vì sao để trống `Branch`: job `publish-component` chạy trong workflow run do `push` vào `main` kích hoạt, nên OIDC claim `ref` = `refs/heads/main` và điền `main` *về lý thuyết* cũng đúng — nhưng để trống bỏ được một biến số ở lần publish đầu. Publish lỗi **không mất version** (chưa có version nào được tạo), chỉ cần sửa trusted uploader rồi re-run job → có thể siết lại `main` sau khi lần đầu thành công.
+
+#### Hạ tầng publish đã verify sẵn cho Phase 4
+
+- `espressif/upload-components-ci-action@v2` tồn tại thật (tag mới nhất `v2.2.1`); input đang dùng ở cả hai workflow (`namespace`, `components`, `dry_run`) khớp đúng `action.yml`. Không set `api_token` → action tự dùng OIDC, đúng ý định.
+- `components:` khai đúng: `wireguard_lwip:.` (component root = repo root) và `microlink:components/microlink`.
+- `publish-component` của microlink **không cần** `submodules: recursive` dù repo có submodule `components/wireguard_lwip`: thư mục được pack là `components/microlink`, và nó lấy wireguard_lwip qua registry dep `^1.0.0`, không qua submodule.
+- Hai Release PR đều `MERGEABLE`, mọi check *thật* xanh (microlink: 5 example × v6.0.1, `release-v6.0`, 3 config variant, `manifest validation`). `mergeStateStatus` là `UNSTABLE` chỉ vì `publish-dry-run` đỏ — đúng như thiết kế (`continue-on-error: true`, namespace chưa có), và nó **không phải required check** nên không chặn merge.
+- Cả hai Release PR chỉ đổi `.release-please-manifest.json` + `CHANGELOG.md`, **không** đổi `idf_component.yml` — đúng, vì version trong manifest đã được set tay đúng bằng version đích ngay từ PR tạo file (`3.0.0` / `1.0.0`). `extra-files` sẽ bắt đầu có tác dụng từ lần release *sau*.
 
 ### Phase 4 — Publish theo thứ tự phụ thuộc
 
@@ -313,7 +356,7 @@ pio run -t upload && pio device monitor
 ## Điểm chưa verify được / cần quyết định
 
 1. ~~Bug cellular (Phát hiện G)~~ — **đã verify cứng bằng CI thật (Docker ESP-IDF), không chỉ suy luận tĩnh** — nhưng fix ban đầu SAI (REQUIRES gate theo Kconfig không hoạt động, xem Phát hiện J), đã tự phát hiện và sửa trong PR #11.
-2. **Namespace `fugo101` chưa tồn tại** (kiểm tra lại 2026-08-14: vẫn HTTP 404), cần Espressif duyệt tay — long pole của cả kế hoạch. **Việc của user, nên nộp ngay.**
+2. **Namespace `fugo101` chưa tồn tại** — kiểm lại 2026-08-14 bằng endpoint ĐÚNG (`api/components?namespace=`, xem Phase 3; lần kiểm trước dùng `api/namespaces/<ns>` là endpoint không tồn tại nên kết quả 404 đó vô nghĩa): trả `NamespaceNotFoundError`. Cần Espressif duyệt tay qua Namespace Request Form — long pole của cả kế hoạch, chặn 3.4 + Phase 4 + Phase 5. **Việc của user, nên nộp ngay.**
 3. ~~`~/Projects/microlink` chưa tồn tại~~ — đã transfer + clone xong, xem "Phần 1".
 4. ~~clang-format~~ — đã chốt: bỏ hẳn (§1.4).
 5. ~~Copyright `fudio101`~~ — đã chốt: giữ nguyên, không đổi sang FuGo (áp dụng cho `microlink`; `wireguard-lwip` giữ nguyên LICENSE gốc của Daniel Hope, không có dòng copyright FuGo nào để cân nhắc).
