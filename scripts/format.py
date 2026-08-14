@@ -64,8 +64,7 @@ def get_source_files(root_dir, targets=None):
                     # Skip managed components and build directories
                     path_str = str(file_path)
                     if any(ignored in path_str for ignored in
-                           ["managed_components", ".pio", "build", "vendor", "components/microlink",
-                            "components/wireguard_lwip"]):
+                           ["managed_components", ".pio", "build"]):
                         continue
                     files_to_format.append(str(file_path.absolute()))
 

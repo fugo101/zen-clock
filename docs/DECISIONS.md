@@ -445,26 +445,22 @@ Release Please PR still gets a full build.
 
 ## Repo & third-party
 
-> ⚠️ **`fugo101` and `fudio101` are two different accounts. Neither is a typo.** This repo's `origin`
-> is **`fugo101/zen-clock`**; the microlink fork and the `LICENSE` copyright are **`fudio101`**.
-> `fudio101/zen-clock` returns 404 — "correcting" the README back to it reintroduces a real bug.
-> (`github-fudio101` appearing in a remote URL is a local SSH `Host` alias, not part of any GitHub
-> path.)
+> ⚠️ **`fugo101` and `fudio101` are two different accounts. Neither is a typo.** As of the microlink
+> registry migration (2026-08), both `fugo101/zen-clock` (this repo's `origin`) and
+> `fugo101/microlink` live under the org. Only the `LICENSE` copyright line stays **`fudio101`** —
+> that's a personal copyright attribution, unrelated to which account owns which repo, and doesn't
+> move when a repo is transferred. (`github-fudio101` appearing in a remote URL is a local SSH
+> `Host` alias, not part of any GitHub path.)
 
-> ⚠️ **Don't run `git submodule sync` in `vendor/microlink`** unless you mean it. It rewrites the
-> remote from `.gitmodules`, and a global `url.insteadOf` rule then rewrites https → the *default*
-> SSH identity, which has no push rights. Symptom: `git push` denied. Fix:
-> `git remote set-url origin git@github-fudio101:fudio101/microlink.git`. Check `git remote -v`
-> before pushing.
-
-**After merging a submodule PR on GitHub, the local branch does not fast-forward itself.** Bump the
-submodule pointer from the *merged tip of `main`*, not from your feature branch — another PR merging
-in between will leave the pointer stranded on an older commit. This has happened.
-
-**`wireguard_lwip` is a diverged BSD-3 fork of `smartalock/wireguard-lwip`.** Provenance, the pin,
-and the upstream re-check procedure are in `THIRD_PARTY.md`. Last check (2026-08-10): the one
-upstream commit that mattered (`ac84f4c`, cryptokey routing checking `dest` instead of `src` — a
-whitelist bypass) is already fixed in our copy, as are both 2022 replay-detection fixes.
+**`microlink` and `wireguard_lwip` are ESP Component Registry dependencies, not vendored source.**
+Since the registry migration (2026-08), there is no `vendor/microlink` submodule and no
+`components/microlink` / `components/wireguard_lwip` symlinks — the submodule footguns that used
+to live in this section (`git submodule sync` rewriting remotes to the wrong SSH identity,
+submodule-pointer bump races on merge) no longer apply. `THIRD_PARTY.md`
+has the current version pins and license attributions; `fugo101/microlink` and
+`fugo101/wireguard-lwip` each carry their own real git history and `UPSTREAM_PRS.md`-style
+absorption record now, so provenance questions get answered there, not by hand-maintained prose
+in this repo.
 
 **A caret range already blocks a major bump** — `^9` and `^9.5.0` share the same `<10.0.0` ceiling.
 The genuinely unbounded dependency was `idf: ">=6.0.0"`, now `<7.0.0`: this project carries ESP-IDF

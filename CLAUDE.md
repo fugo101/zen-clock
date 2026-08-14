@@ -121,8 +121,7 @@ mid-action now always lands instead of being silently dropped.
 | `components/sntp_sync/`        | NTP time synchronization; skips initial sync on deep-sleep wake if recently synced                                                                                                                                         |
 | `components/deep_sleep/`       | Auto-sleep timer (inactivity) + manual trigger + ext1 wakeup on GPIO0/GPIO14. Cancellable during the fade; declines while an inhibit callback says so. Cuts the LCD rail and latches it — see the hold/release warning below |
 | `components/lcd_backlight/`    | LCD backlight driver via LEDC PWM                                                                                                                                                                                          |
-| `components/microlink/`        | Tailscale VPN client — symlink → `vendor/microlink/components/microlink`                                                                                                                                                   |
-| `components/wireguard_lwip/`   | WireGuard lwIP netif — symlink → `vendor/microlink/.../wireguard_lwip`. Third-party BSD-3 ([smartalock/wireguard-lwip](https://github.com/smartalock/wireguard-lwip)), diverged fork — see `THIRD_PARTY.md` before syncing |
+| `managed_components/fugo101__microlink/` | Tailscale VPN client — ESP Component Registry dependency (`src/idf_component.yml`), not a local component. Pulls in `fugo101__wireguard_lwip` transitively — see `THIRD_PARTY.md` for the BSD-3 attribution chain back to [smartalock/wireguard-lwip](https://github.com/smartalock/wireguard-lwip) (Daniel Hope) |
 
 ### UI Component (`components/ui/`)
 
@@ -309,16 +308,22 @@ Managed components (in `managed_components/`):
 
 - `espressif__esp_lvgl_port` — LVGL port for ESP-IDF
 - `espressif__network_provisioning` ^1.2.4 — BLE provisioning manager
-- `espressif__cjson` — JSON (used by provisioning QR)
+- `espressif__cjson` — JSON (used by provisioning QR and by MicroLink's control-plane parsing)
 - `lvgl__lvgl` — LVGL graphics library
+- `fugo101__microlink` ^3.0.0 — Tailscale VPN client. Pulls in `fugo101__wireguard_lwip` ^1.0.0
+  transitively — never declare it directly in `src/idf_component.yml`
+- `fugo101__wireguard_lwip` — WireGuard/lwIP integration, brought in transitively above. A real
+  fork of [smartalock/wireguard-lwip](https://github.com/smartalock/wireguard-lwip) (Daniel Hope,
+  BSD-3-Clause) — see `THIRD_PARTY.md`
 
-Declared in `src/idf_component.yml`.
+Declared in `src/idf_component.yml`. `REQUIRES microlink` / `PRIV_REQUIRES wireguard_lwip` in the
+consuming `CMakeLists.txt` files use the **short** component name, not the registry-mangled one
+(`fugo101__microlink`) — the component manager rewrites this at build time regardless of source,
+so don't "fix" it.
 
-Vendor submodule (in `vendor/`):
-
-- `vendor/microlink` — MicroLink Tailscale client (branch: `main`)
-    - Symlinked into `components/microlink/` and `components/wireguard_lwip/`
-    - Clone the repo with `--recursive` or run `git submodule update --init` after clone
+`override_path` is a local-only escape hatch for developing against an unpublished checkout of
+microlink (see the comment in `src/idf_component.yml`) — never commit it uncommented. CI enforces
+this.
 
 ## Tailscale / MicroLink
 
@@ -331,6 +336,15 @@ MicroLink connects to Tailscale on every `WIFI_MGR_CONNECTED` event:
 
 NVS namespaces used by MicroLink: `"microlink"` (keys), `"ml_peers"` (peer cache). To factory-reset Tailscale state:
 call `microlink_factory_reset()` **before** `microlink_init()`.
+
+`CONFIG_ML_*` Kconfig options come from `managed_components/fugo101__microlink/Kconfig` — a
+directory that doesn't exist yet on a clean checkout's first CMake configure pass. The component
+manager snapshots sdkconfig before that pass and restores it once the directory exists, which
+works but is a workaround, not a guarantee: if it ever regresses, `CONFIG_ML_DEVICE_NAME` /
+`CONFIG_ML_H2_BUFFER_SIZE_KB` / `CONFIG_ML_JSON_BUFFER_SIZE_KB` would silently reset to their
+Kconfig defaults **and the firmware would still compile cleanly** — nothing would fail loudly.
+After any dependency-manager or ESP-IDF upgrade touching this path, diff
+`sdkconfig.lilygo-t-display-s3`'s `CONFIG_ML_*` lines against expectations before trusting a build.
 
 **UI integration:**
 
