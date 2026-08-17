@@ -3,6 +3,18 @@
 > Kế hoạch làm việc xuyên nhiều phiên — không phải tài liệu tham khảo tĩnh. Cập nhật file này
 > khi có quyết định mới hoặc phase hoàn tất. Xem `docs/DECISIONS.md` để biết bối cảnh vendoring
 > hiện tại (submodule + symlink) trước khi đọc kế hoạch này.
+>
+> **Điểm tiếp tục: [zen-clock#50](https://github.com/fugo101/zen-clock/issues/50)** — checklist
+> 3.1 → 3.4 → Phase 4 → Phase 5, tất cả chặn bởi việc duyệt namespace `fugo101`. File này vẫn là
+> nguồn chi tiết; issue chỉ là checklist để không phải đọc lại cả file mới biết đang đứng ở đâu.
+> Việc lẻ không chặn migration đã tách ra issue riêng: [microlink#14](https://github.com/fugo101/microlink/issues/14)
+> (leak mbedTLS ở DERP), [microlink#15](https://github.com/fugo101/microlink/issues/15) (ô matrix
+> `release-v6.1`), [microlink#16](https://github.com/fugo101/microlink/issues/16) +
+> [wireguard-lwip#8](https://github.com/fugo101/wireguard-lwip/issues/8) (gỡ `continue-on-error`).
+>
+> ⚠️ Issues từng bị **tắt** ở cả `fugo101/microlink` lẫn `fugo101/wireguard-lwip` — nghĩa là
+> `.github/workflows/upstream-drift.yml` (vốn mở/cập nhật issue tracking hằng tuần) chưa từng có
+> chỗ để ghi kết quả. Đã bật lại 2026-08-17.
 
 ## Context
 
