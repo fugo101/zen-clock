@@ -69,13 +69,10 @@ ZenClock/
 │   │   ├── src/ble_provisioning.c
 │   │   ├── CMakeLists.txt
 │   │   └── idf_component.yml
-│   ├── microlink -> ../vendor/microlink/components/microlink
-│   │                          # Tailscale VPN client (symlink → submodule)
-│   └── wireguard_lwip -> ../vendor/microlink/components/wireguard_lwip
-│                          # WireGuard lwIP integration (symlink → submodule)
-│                          # Third-party BSD-3 — see THIRD_PARTY.md
-├── vendor/
-│   └── microlink/             # git submodule (branch: main)
+├── managed_components/         # auto-downloaded by the component manager, not tracked in git
+│   ├── fugo101__microlink/     # Tailscale VPN client — pulled in via src/idf_component.yml
+│   └── fugo101__wireguard_lwip/ # WireGuard/lwIP integration, brought in by microlink transitively
+│                                # Third-party BSD-3 fork — see THIRD_PARTY.md
 ├── include/
 │   └── board_config.h         # Pin definitions and board constants (single source)
 ├── src/
@@ -105,16 +102,11 @@ ZenClock/
 ### Clone
 
 ```bash
-git clone --recursive https://github.com/fugo101/zen-clock.git
+git clone https://github.com/fugo101/zen-clock.git
 ```
 
-> `--recursive` is required to initialize the `vendor/microlink` submodule.
-> Without it, `components/microlink` and `components/wireguard_lwip` symlinks will be dangling and the build will fail.
->
-> If you already cloned without `--recursive`:
-> ```bash
-> git submodule update --init
-> ```
+No submodules — `pio run` downloads `fugo101/microlink` (and its transitive `fugo101/wireguard_lwip`
+dependency) into `managed_components/` on first build, per `src/idf_component.yml`.
 
 ### Build & Flash
 

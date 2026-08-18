@@ -39,6 +39,34 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 1.2.4
+  fugo101/microlink:
+    component_hash: 1371ac2004d711f343ac9a0edd9b8f98110dbd479465fc968c00125e6798ba5f
+    dependencies:
+    - name: espressif/cjson
+      registry_url: https://components.espressif.com
+      require: private
+      version: ^1.7.19
+    - name: fugo101/wireguard_lwip
+      registry_url: https://components.espressif.com
+      require: private
+      version: ^1.0.0
+    - name: idf
+      require: private
+      version: '>=6.0,<7.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 3.0.0
+  fugo101/wireguard_lwip:
+    component_hash: b1269e4e9c4311c7900d06a7728ca98bebfa8567fda6f8a2c06545e3f621449a
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=6.0,<7.0'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.0.0
   idf:
     source:
       type: idf
@@ -53,8 +81,9 @@ dependencies:
 direct_dependencies:
 - espressif/esp_lvgl_port
 - espressif/network_provisioning
+- fugo101/microlink
 - idf
 - lvgl/lvgl
-manifest_hash: 80cafaea94e88890579ec28f3d1ba4d88376010c64a772cfa0046a7eb5ef2bf8
+manifest_hash: dc006fd65cef72268c2a830cf9f96799abcc0b0efba4d9c5bb2cc6dc4899c6ed
 target: esp32s3
 version: 2.0.0

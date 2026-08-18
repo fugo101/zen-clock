@@ -8,10 +8,20 @@ dependencies:
     # way — a bare caret already blocks a major-version jump, it just didn't pin the tested floor).
     version: "^9.5.0"
     public: true
+  fugo101/microlink:
+    version: "^3.0.0"
+    public: true
+    # LOCAL-ONLY, never commit uncommented:
+    #   override_path: "../../microlink/components/microlink"
+    # Path is relative to the directory containing THIS file (src/), not the project root, and
+    # must point at the component directory (the one with CMakeLists.txt), not the repo root.
+    # fugo101/wireguard_lwip comes in transitively via microlink's own manifest -- never declare
+    # it here directly.
   ## network_provisioning is not used directly by this component — it comes in transitively via
   ## the ble_provisioning component's own manifest (components/ble_provisioning/idf_component.yml).
   ## Required IDF version
   idf:
     # Upper-bounded: this project carries ESP-IDF 6.x-specific patches (mbedTLS 4.x/TF-PSA-Crypto,
-    # -std=gnu23, vendor/microlink compat work) that a silent jump to IDF 7.x would invalidate.
+    # -std=gnu23) that a silent jump to IDF 7.x would invalidate. fugo101/microlink itself also
+    # requires >=6.0,<7.0 for the same TF-PSA-Crypto reason.
     version: ">=6.0.0,<7.0.0"

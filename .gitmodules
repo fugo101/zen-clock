@@ -1,4 +1,0 @@
-[submodule "vendor/microlink"]
-	path = vendor/microlink
-	url = https://github.com/fudio101/microlink.git
-	branch = main

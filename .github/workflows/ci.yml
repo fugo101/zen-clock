@@ -29,7 +29,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          submodules: recursive
           fetch-depth: 0 # need history for the build-relevant-changes diff below; repo is 2.6M, cheap
 
       - name: Setup PlatformIO PATH
@@ -51,6 +50,19 @@ jobs:
 
       - name: Check for leaked credentials
         run: python3 scripts/check_secrets.py
+
+      - name: Reject committed override_path
+        # override_path in any idf_component.yml is a local-machine escape hatch (see
+        # src/idf_component.yml's comment) -- it points at an absolute path on whoever's machine
+        # committed it, and serializes into dependencies.lock as type: local, silently replacing
+        # the registry package with an uncommitted local checkout for every consumer of that lock
+        # file. `git ls-files` (not `find`) keeps managed_components/** out of scope. Anchored to
+        # the YAML key so the commented-out example in src/idf_component.yml doesn't trip it.
+        run: |
+          if git ls-files '*idf_component.yml' | xargs -r grep -nE '^[[:space:]]*override_path[[:space:]]*:'; then
+            echo "::error::Uncommented override_path found in a tracked idf_component.yml — this is a local-only escape hatch, never commit it."
+            exit 1
+          fi
 
       - name: Check formatting
         run: python3 scripts/format.py --check
