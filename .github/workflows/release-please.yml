@@ -89,6 +89,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
+          append_body: true
           body: |
             Flash a blank board (offsets from `pio run -t upload -v`, esp32s3, 16MB flash):
             ```
