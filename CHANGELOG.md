@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.4.0](https://github.com/fugo101/zen-clock/compare/v0.3.0...v0.4.0) (2026-08-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* migrate microlink + wireguard_lwip to the ESP Component Registry
+
+### Features
+
+* migrate microlink + wireguard_lwip to the ESP Component Registry ([a56a8e9](https://github.com/fugo101/zen-clock/commit/a56a8e912b8a92542e61c3dca4c28177127ec412))
+
+
+### Bug Fixes
+
+* **microlink:** absorb upstream reachability, RX-path and registration-log fixes ([#39](https://github.com/fugo101/zen-clock/issues/39)) ([82bb587](https://github.com/fugo101/zen-clock/commit/82bb58780ab065164a66300019e9bd6244c244be))
+
+
+### Documentation
+
+* add the microlink registry migration plan ([73fdd9d](https://github.com/fugo101/zen-clock/commit/73fdd9d1a5d1e001ac922536ab1c856749202ba0))
+* compact Phase 2 in the microlink registry migration plan ([4fe886a](https://github.com/fugo101/zen-clock/commit/4fe886a2c57eb0d8a5dfd3aa4159885bdd3c0fc2))
+* point the migration plan at its GitHub issues ([#51](https://github.com/fugo101/zen-clock/issues/51)) ([87b26f0](https://github.com/fugo101/zen-clock/commit/87b26f091f97dce5ce2135bdf20e4ea42550db79))
+* record Phase 3 findings in the microlink registry migration plan ([#43](https://github.com/fugo101/zen-clock/issues/43)) ([4ec7bee](https://github.com/fugo101/zen-clock/commit/4ec7beea06bb4ade56d14472a99ac98b22def603))
+* remove the microlink registry migration plan ([#53](https://github.com/fugo101/zen-clock/issues/53)) ([f534524](https://github.com/fugo101/zen-clock/commit/f53452457348bfe4d8d2dcf4607887d04a6d59aa))
+
 ## [0.3.0](https://github.com/fugo101/zen-clock/compare/v0.2.3...v0.3.0) (2026-08-13)
 
 
