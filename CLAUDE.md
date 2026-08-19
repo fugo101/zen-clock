@@ -368,3 +368,13 @@ association and IP lease are real, and a LAN-only network is usable — but it f
 which is proof the internet works. There is deliberately **no periodic DNS re-probe** in `WIFI_ST_CONNECTED`:
 `do_dns_probe()` contains an unbounded `getaddrinfo()`, and `wifi_manager_stop()` has to be able to interrupt that
 state within `STOP_TIMEOUT_MS`.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live as GitHub Issues in `fugo101/zen-clock`, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context layout — root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
