@@ -40,7 +40,7 @@ dependencies:
       type: service
     version: 1.2.4
   fugo101/microlink:
-    component_hash: 9fb3633d7b0104b804722af15246579ef4c42531d22b00ae2271454d07e478e4
+    component_hash: 03b10c992a799d68672423028603e7126f43f699d2dacf0f82f7b9feb8de7e5c
     dependencies:
     - name: espressif/cjson
       registry_url: https://components.espressif.com
@@ -56,7 +56,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 3.1.0
+    version: 3.1.2
   fugo101/wireguard_lwip:
     component_hash: 50b83368a3014f906477db2d09574cfce88a666b1c5c31d088c768f1ebf286f6
     dependencies:
