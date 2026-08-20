@@ -51,21 +51,19 @@ extern "C"
   // ============================================================
 
   /**
-   * @brief Read voltage, percentage and USB status.
+   * @brief Read battery percentage and USB status.
    *
-   * *mv is a single raw ADC conversion (×2 corrected for the resistor divider). *pct comes from
-   * espressif/adc_battery_estimation, which runs its own independent, internally-filtered ADC
-   * read to kill jitter — so *mv and *pct are no longer guaranteed to come from the same instant
-   * (see docs/adr/0001-battery-percentage-source.md). *usb is a plain voltage-threshold check on
-   * *mv, unrelated to the estimation library's own charging-state estimate.
+   * *pct comes from espressif/adc_battery_estimation's own internally-filtered ADC read (kills
+   * jitter). *usb is a separate, plain voltage-threshold check — unrelated to the estimation
+   * library's own charging-state estimate (see docs/adr/0001-battery-percentage-source.md).
    *
    * *pct is not meaningful while *usb is true (the ADC is reading the USB rail, not the battery,
    * so it clamps to the top of the curve) — callers must not display it in that case; this is
    * why bsp_battery_read() doesn't hide it itself.
    *
-   * Any out pointer may be NULL. On ADC failure, *mv and *pct are set to -1 and *usb to false.
+   * Any out pointer may be NULL. On ADC failure, *pct is set to -1 and *usb to false.
    */
-  void bsp_battery_read(int *mv, int *pct, bool *usb);
+  void bsp_battery_read(int *pct, bool *usb);
 
   // ============================================================
   // Button Input

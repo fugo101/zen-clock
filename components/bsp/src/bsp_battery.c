@@ -112,9 +112,10 @@ void bsp_battery_setup(void)
 
   // Percentage estimation — hands our own already-initialized ADC + calibration handles to the
   // library via .external (not .internal): adc_battery_estimation has no voltage-only getter, so
-  // bsp_battery_read() still needs to read this same channel itself for *mv, and ESP-IDF won't
-  // let two independent adc_oneshot_unit_handle_t own the same physical unit. Left NULL on
-  // failure — bsp_battery_read() checks and reports pct as -1, same "N/A" degrade as above.
+  // bsp_battery_read() still needs to read this same channel itself for USB detection (see
+  // read_voltage_mv() below), and ESP-IDF won't let two independent adc_oneshot_unit_handle_t own
+  // the same physical unit. Left NULL on failure — bsp_battery_read() checks and reports pct as
+  // -1, same "N/A" degrade as above.
   adc_battery_estimation_t est_cfg = {0};
   est_cfg.external.adc_handle = s_adc_handle;
   est_cfg.external.adc_cali_handle = s_adc_cali_handle;
@@ -133,8 +134,11 @@ void bsp_battery_setup(void)
   ESP_LOGI(tag, "Battery monitor ready (GPIO%d, ADC1_CH%d)", PIN_BAT_ADC, BAT_ADC_CHANNEL);
 }
 
-// Raw single ADC conversion — feeds *mv and *usb in bsp_battery_read(). Not exposed on its own;
-// nothing outside this file needs it standalone (see docs/adr/0001-battery-percentage-source.md).
+// Raw single ADC conversion — the only remaining consumer is the USB-threshold check in
+// bsp_battery_read() below (adc_battery_estimation has no external usb/charge-detect pin to read
+// on this board). Not a public value: no UI shows raw mV anymore (see
+// docs/adr/0001-battery-percentage-source.md), but it's still logged at debug level so it's
+// available over `pio device monitor` if the curve ever needs real calibration.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 static int read_voltage_mv(void)
 {
@@ -159,22 +163,20 @@ static int read_voltage_mv(void)
     return -1;
   }
 
-  return voltage * 2; // ×2 for resistor divider
+  const int mv = voltage * 2; // ×2 for resistor divider
+  ESP_LOGD(tag, "Raw battery voltage: %dmV", mv);
+  return mv;
 }
 
 // ============================================================
 // Public API
 // ============================================================
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-void bsp_battery_read(int *mv, int *pct, bool *usb)
+void bsp_battery_read(int *pct, bool *usb)
 {
   const int reading = read_voltage_mv();
   const bool is_usb = reading >= 0 && reading >= USB_THRESHOLD_MV;
   s_is_on_usb = is_usb; // must be set before adc_battery_estimation_get_capacity() below
-  if (mv)
-  {
-    *mv = reading;
-  }
   if (usb)
   {
     *usb = is_usb;

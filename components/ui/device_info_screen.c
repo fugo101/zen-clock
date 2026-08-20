@@ -198,19 +198,22 @@ static void update_battery(void)
   {
     return;
   }
-  char buf[24];
-  int mv;
+  char buf[12];
   int pct;
   bool usb;
-  bsp_battery_read(&mv, &pct, &usb);
+  bsp_battery_read(&pct, &usb);
   if (usb)
   {
-    // pct is not meaningful on USB (ADC reads the USB rail, not the battery) — show mV only.
-    snprintf(buf, sizeof(buf), "Charging (%dmV)", mv);
+    // pct is not meaningful on USB (ADC reads the USB rail, not the battery).
+    snprintf(buf, sizeof(buf), "Charging");
+  }
+  else if (pct >= 0)
+  {
+    snprintf(buf, sizeof(buf), "%d%%", pct);
   }
   else
   {
-    snprintf(buf, sizeof(buf), "%d%% (%dmV)", pct, mv);
+    snprintf(buf, sizeof(buf), "N/A");
   }
   lv_label_set_text(s_value_labels[ROW_BATTERY], buf);
 }

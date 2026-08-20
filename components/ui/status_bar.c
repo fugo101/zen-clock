@@ -103,7 +103,7 @@ static void battery_timer_cb(lv_timer_t *timer) // NOLINT(readability-non-const-
 
   int pct;
   bool usb;
-  bsp_battery_read(NULL, &pct, &usb); // one ADC conversion instead of two
+  bsp_battery_read(&pct, &usb);
   // Low-battery state never applies on USB power — it is about running out, not about charge
   // level while plugged in.
   const bool low = pct >= 0 && !usb && pct < BATT_LOW_PCT;

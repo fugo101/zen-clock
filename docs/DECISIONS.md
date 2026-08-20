@@ -196,25 +196,29 @@ that individual part, not a bug. It bricked boot for a cosmetic battery percenta
 including `adc_battery_estimation_create()` below — degrade the same way: handles stay NULL,
 readings report `-1`, and the UI already renders that as "N/A".
 
-**`bsp_battery_read(mv, pct, usb)` is the only public battery function** (issue #44, 2026-08-20).
+**`bsp_battery_read(pct, usb)` is the only public battery function** (issue #44, 2026-08-20).
 `bsp_battery_get_voltage()`, `bsp_battery_get_percentage()` and `bsp_battery_usb_connected()` were
 deleted — a repo-wide grep found zero callers outside `bsp_battery.c` itself, and the point of this
 change was a leaner wrapper around `espressif/adc_battery_estimation`, not more public surface.
 
-**`*mv` and `*pct` no longer come from one atomic ADC conversion — deliberately.** This used to be
-guaranteed (see git history pre-#44) specifically because two separate calls once let C's
-unspecified argument evaluation order print a `%` and `mV` that visibly disagreed. That guarantee is
-gone on purpose: the jitter fix *is* `adc_battery_estimation_get_capacity()`'s internal
-10-sample-averaged read, which the library owns and doesn't expose a raw-voltage hook into. `*mv`
-stays a single instantaneous raw read (still done by `bsp_battery.c` itself, for diagnostics);
-`*pct` is the library's independently-read, filtered value. Two different, intentional truths, not a
-reintroduction of the old bug. See `docs/adr/0001-battery-percentage-source.md`.
+**Raw millivolts is not part of the public API — deliberately, not an oversight.** It briefly was
+(`*mv` on `bsp_battery_read()`), specifically so `*mv` and `*pct` could no longer share one atomic
+ADC conversion the way they used to (see git history pre-#44): the jitter fix *is*
+`adc_battery_estimation_get_capacity()`'s internal 10-sample-averaged read, which the library owns
+and exposes no raw-voltage hook into, so `*pct` was already necessarily a second, independent read.
+Once `*mv` stopped being guaranteed-consistent with `*pct` anyway, exposing it bought nothing but a
+harder-to-explain contract — removed instead. The raw read didn't go away, though: `bsp_battery.c`
+still needs it internally for the USB-threshold check (see below), and it's still logged at
+`ESP_LOGD` for anyone debugging over `pio device monitor` or calibrating a real curve later. See
+`docs/adr/0001-battery-percentage-source.md`.
 
 **The library can't own the ADC unit — `bsp_battery.c` still does.** `adc_battery_estimation` has no
-voltage-only getter, so `bsp_battery_read()` must keep reading the channel itself for `*mv`; ESP-IDF
-also won't let two independent `adc_oneshot_unit_handle_t`s own the same physical unit. The library
-is handed our already-initialized handles via `.external.adc_handle`/`.adc_cali_handle`, not
-`.internal.*` auto-creation — the wrapper couldn't be eliminated, only thinned.
+voltage-only getter, and it has no other way to detect USB power on this board (no charge-detect
+pin) — so `bsp_battery_read()` must keep reading the channel itself for the USB-threshold check;
+ESP-IDF also won't let two independent `adc_oneshot_unit_handle_t`s own the same physical unit. The
+library is handed our already-initialized handles via `.external.adc_handle`/`.adc_cali_handle`, not
+`.internal.*` auto-creation — the wrapper couldn't be eliminated, only thinned. This holds regardless
+of whether raw mV is exposed publicly — dropping it from the API didn't remove this constraint.
 
 **`charging_detect_cb` is wired to the existing immediate USB-threshold check, not left for the
 library's own software trend estimation.** First cut left it unset, trusting the library's
@@ -232,19 +236,17 @@ lag, no stuck values.
 divider, not the battery — the value is structurally above every point in both prebuilt OCV-SOC
 curves, so it clamps to the highest curve point regardless of which curve or charging-detection
 method is used; swapping the estimation library does not by itself stop this. `status_bar.c` blanks
-the `%` label (charge icon alone carries the meaning); `device_info_screen.c` shows "Charging
-(`mV`)" instead of a bogus `%`.
+the `%` label (charge icon alone carries the meaning); `device_info_screen.c` shows "Charging" with
+no number.
 
-**`bsp_battery_read()` is no longer O(1) — accepted, not yet optimized.** `*pct` now costs
-`adc_battery_estimation_get_capacity()`'s own ~10-sample filtered read plus a std-dev pass, on top
-of the 1 raw conversion for `*mv`: ~11 ADC conversions per call instead of 1. It's called from two
-independent 30s LVGL timers (`status_bar.c` and `device_info_screen.c`), each triggering its own
-full read with no sharing between them, despite `status_bar.c` already exposing
-`status_bar_register_battery_cb()` as a fan-out point. Not fixed here — `on_battery_reading()`
-(`app_handlers.c`) already consumes that callback but only gets `pct`/`usb`, not `mv`, so wiring
-`device_info_screen.c` through it would mean extending `status_bar_battery_cb_t`'s signature, a
-larger change than this fix's scope. Worth doing if a consumer ever needs a tighter period than
-30s.
+**`bsp_battery_read()` is no longer O(1) — accepted, not yet optimized.** `*pct` costs
+`adc_battery_estimation_get_capacity()`'s own ~10-sample filtered read plus a std-dev pass, plus 1
+raw conversion for the USB-threshold check: ~11 ADC conversions per call instead of 1. It's called
+from two independent 30s LVGL timers (`status_bar.c` and `device_info_screen.c`), each triggering
+its own full read with no sharing between them, despite `status_bar.c` already exposing
+`status_bar_register_battery_cb()` as a fan-out point `on_battery_reading()` (`app_handlers.c`)
+already consumes. Not fixed here — tracked as issue #61. Worth doing if a consumer ever needs a
+tighter period than 30s.
 
 ---
 
