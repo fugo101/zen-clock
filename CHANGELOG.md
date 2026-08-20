@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/fugo101/zen-clock/compare/v0.4.0...v0.4.1) (2026-08-20)
+
+
+### Documentation
+
+* configure agent skills for GitHub issue tracker and domain docs ([#56](https://github.com/fugo101/zen-clock/issues/56)) ([8350cd7](https://github.com/fugo101/zen-clock/commit/8350cd74bc8edc1c092dc7eb93e728a5afd404e1))
+
 ## [0.4.0](https://github.com/fugo101/zen-clock/compare/v0.3.0...v0.4.0) (2026-08-18)
 
 
