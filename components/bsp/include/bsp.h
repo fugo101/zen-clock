@@ -51,29 +51,19 @@ extern "C"
   // ============================================================
 
   /**
-   * @brief Get battery voltage in millivolts (×2 corrected for divider).
-   */
-  int bsp_battery_get_voltage(void);
-
-  /**
-   * @brief Get battery percentage (0-100).
-   */
-  int bsp_battery_get_percentage(void);
-
-  /**
-   * @brief Check if USB power is connected based on voltage reading.
-   */
-  bool bsp_battery_usb_connected(void);
-
-  /**
-   * @brief Read voltage, percentage and USB status from a single ADC conversion.
+   * @brief Read voltage, percentage and USB status.
    *
-   * bsp_battery_get_voltage/_get_percentage/_usb_connected() each trigger their own fresh ADC
-   * conversion; calling more than one per refresh both wastes conversions and — because C leaves
-   * argument evaluation order unspecified — can print a percentage and a voltage that came from
-   * two different samples and disagree with each other. Use this instead when more than one of
-   * the three values is needed at once. Any out pointer may be NULL. On ADC failure, *mv and *pct
-   * are set to -1 and *usb to false, matching the individual getters' failure behavior.
+   * *mv is a single raw ADC conversion (×2 corrected for the resistor divider). *pct comes from
+   * espressif/adc_battery_estimation, which runs its own independent, internally-filtered ADC
+   * read to kill jitter — so *mv and *pct are no longer guaranteed to come from the same instant
+   * (see docs/adr/0001-battery-percentage-source.md). *usb is a plain voltage-threshold check on
+   * *mv, unrelated to the estimation library's own charging-state estimate.
+   *
+   * *pct is not meaningful while *usb is true (the ADC is reading the USB rail, not the battery,
+   * so it clamps to the top of the curve) — callers must not display it in that case; this is
+   * why bsp_battery_read() doesn't hide it itself.
+   *
+   * Any out pointer may be NULL. On ADC failure, *mv and *pct are set to -1 and *usb to false.
    */
   void bsp_battery_read(int *mv, int *pct, bool *usb);
 

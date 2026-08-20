@@ -111,34 +111,39 @@ static void battery_timer_cb(lv_timer_t *timer) // NOLINT(readability-non-const-
 
   if (pct >= 0)
   {
-    // Update percentage text (number only)
-    snprintf(buf, sizeof(buf), "%d%%", pct);
-    lv_label_set_text(s_bat_pct, buf);
-
     // Update icon based on USB / charge level
     if (usb)
     {
+      // pct is not meaningful on USB (ADC reads the USB rail, not the battery — clamps to the
+      // top of the curve); the charge icon alone says everything the number would have.
+      lv_label_set_text(s_bat_pct, "");
       lv_label_set_text(s_bat_icon, LV_SYMBOL_CHARGE);
-    }
-    else if (pct > 75)
-    {
-      lv_label_set_text(s_bat_icon, LV_SYMBOL_BATTERY_FULL);
-    }
-    else if (pct > 50)
-    {
-      lv_label_set_text(s_bat_icon, LV_SYMBOL_BATTERY_3);
-    }
-    else if (pct > 25)
-    {
-      lv_label_set_text(s_bat_icon, LV_SYMBOL_BATTERY_2);
-    }
-    else if (pct > 5)
-    {
-      lv_label_set_text(s_bat_icon, LV_SYMBOL_BATTERY_1);
     }
     else
     {
-      lv_label_set_text(s_bat_icon, LV_SYMBOL_BATTERY_EMPTY);
+      snprintf(buf, sizeof(buf), "%d%%", pct);
+      lv_label_set_text(s_bat_pct, buf);
+
+      if (pct > 75)
+      {
+        lv_label_set_text(s_bat_icon, LV_SYMBOL_BATTERY_FULL);
+      }
+      else if (pct > 50)
+      {
+        lv_label_set_text(s_bat_icon, LV_SYMBOL_BATTERY_3);
+      }
+      else if (pct > 25)
+      {
+        lv_label_set_text(s_bat_icon, LV_SYMBOL_BATTERY_2);
+      }
+      else if (pct > 5)
+      {
+        lv_label_set_text(s_bat_icon, LV_SYMBOL_BATTERY_1);
+      }
+      else
+      {
+        lv_label_set_text(s_bat_icon, LV_SYMBOL_BATTERY_EMPTY);
+      }
     }
 
     if (low)
