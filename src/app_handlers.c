@@ -52,38 +52,53 @@ static bool s_sntp_started = false;
 // then publishes CONNECTED over the top — a solid green icon on a dead link until the backoff
 // reconnect fires, up to five minutes later.
 //
-// So each task writes only the field it owns and calls publish_wifi_icon(), which derives the
-// icon from both under the spinlock. The SNTP task's recovery can no longer contradict a link
-// state it does not own: with s_link_status already DISCONNECTED, the derivation says
-// DISCONNECTED no matter what the flag says.
+// So each task writes only the field it owns through set_link()/set_unverified(), which derive the
+// icon from both and publish it — all inside one critical section. The SNTP task's recovery can no
+// longer contradict a link state it does not own: with s_link_status already DISCONNECTED, the
+// derivation says DISCONNECTED no matter what the flag says.
+//
+// The publish is inside the section, not after it. Deriving under the lock and storing outside
+// only narrows the race: the SNTP task could derive CONNECTED, be descheduled before its store,
+// let the wifi task derive and store DISCONNECTED, then resume and store CONNECTED over the top —
+// green on a dead link, permanently, since DISCONNECTED is terminal with no follow-up event.
+// status_bar_set_wifi_status() is a single volatile store and cannot block, so holding the
+// spinlock across it is safe.
 // ============================================================
 static portMUX_TYPE s_link_mux = portMUX_INITIALIZER_UNLOCKED;
 static wifi_status_t s_link_status = WIFI_STATUS_DISCONNECTED;
 static bool s_unverified = false; // associated, but the DNS probe failed
 
-static void publish_wifi_icon(void)
+// Field write and publish share one critical section for the same reason — two sections would let
+// the other writer land between them. clear_unverified exists so the two transitions that change
+// both fields do it atomically: clearing the flag first would publish a green CONNECTED derived
+// from the link state it is about to leave.
+static void set_link(const wifi_status_t status, const bool clear_unverified)
 {
   portENTER_CRITICAL(&s_link_mux);
+  s_link_status = status;
+  if (clear_unverified)
+  {
+    s_unverified = false;
+  }
   const wifi_status_t icon =
       (s_link_status == WIFI_STATUS_CONNECTED && s_unverified) ? WIFI_STATUS_NO_INTERNET : s_link_status;
-  portEXIT_CRITICAL(&s_link_mux);
   status_bar_set_wifi_status(icon);
+  portEXIT_CRITICAL(&s_link_mux);
 }
 
 static void set_link_status(const wifi_status_t status)
 {
-  portENTER_CRITICAL(&s_link_mux);
-  s_link_status = status;
-  portEXIT_CRITICAL(&s_link_mux);
-  publish_wifi_icon();
+  set_link(status, false);
 }
 
 static void set_unverified(const bool unverified)
 {
   portENTER_CRITICAL(&s_link_mux);
   s_unverified = unverified;
+  const wifi_status_t icon =
+      (s_link_status == WIFI_STATUS_CONNECTED && s_unverified) ? WIFI_STATUS_NO_INTERNET : s_link_status;
+  status_bar_set_wifi_status(icon);
   portEXIT_CRITICAL(&s_link_mux);
-  publish_wifi_icon();
 }
 
 static bool link_unverified(void)
@@ -94,7 +109,7 @@ static bool link_unverified(void)
   return unverified;
 }
 
-// Written once by the wifi_mgr task; read by the esp_timer task in ts_poll_cb(). No lock:
+// Written once by net_worker in start_tailscale(); read by the esp_timer task in ts_poll_cb(). No lock:
 // the ts_poll timer is only armed *after* the assignment below, so a reader can never
 // observe the pre-init value, and the rebind path does not reassign it. volatile keeps the
 // compiler from caching the pointer across the two task contexts.
@@ -323,8 +338,18 @@ static void net_worker_task(void *arg) // NOLINT(readability-non-const-parameter
     if (!s_sntp_started)
     {
       ESP_LOGI(tag, "WiFi verified online — starting NTP sync...");
-      sntp_sync_start(on_sntp_sync);
-      s_sntp_started = true;
+      // Latched only on success. sntp_sync_start() can fail with no task created, and every later
+      // reconnect would then take the notify path, which returns immediately when there is no
+      // task — NTP dead for the rest of the boot with nothing left to retry it.
+      const esp_err_t sret = sntp_sync_start(on_sntp_sync);
+      if (sret == ESP_OK)
+      {
+        s_sntp_started = true;
+      }
+      else
+      {
+        ESP_LOGE(tag, "sntp_sync_start failed: %s — retrying on next connect", esp_err_to_name(sret));
+      }
     }
     else
     {
@@ -724,7 +749,11 @@ void on_ble_prov_event(const ble_prov_event_t event, const char *ssid, const cha
     ble_provisioning_get_device_name(dev_name, sizeof(dev_name));
     ble_provisioning_get_password(prov_pass, sizeof(prov_pass));
     ESP_LOGI(tag, "BLE provisioning active: %s", dev_name);
-    status_bar_set_wifi_status(WIFI_STATUS_PROVISIONING);
+    // set_link_status(), not a bare publish: WiFi has been stopped and the radio handed to BLE, so
+    // this *is* the link state now. Publishing the icon alone would leave s_link_status holding
+    // the pre-provisioning value, and the next publish — an in-flight NTP response clearing the
+    // no-internet flag, say — would repaint "online" over the QR screen.
+    set_link_status(WIFI_STATUS_PROVISIONING);
     prov_screen_show(dev_name, prov_pass);
     break;
   }
@@ -804,11 +833,10 @@ void on_wifi_event(const wifi_manager_event_t event)
 
   case WIFI_MGR_CONNECTED:
     cancel_reconnect();
-    // Cleared before the link status moves: a later connection to a working network must not
-    // inherit the flag from an earlier one. WIFI_MGR_NO_INTERNET, if it comes, arrives
-    // immediately after this and turns the derivation yellow.
-    set_unverified(false);
-    set_link_status(WIFI_STATUS_CONNECTED);
+    // The flag is cleared in the same step: a later connection to a working network must not
+    // inherit it from an earlier one. WIFI_MGR_NO_INTERNET, if it comes, arrives immediately
+    // after this and turns the derivation yellow.
+    set_link(WIFI_STATUS_CONNECTED, true);
     // Everything the connect used to do inline — NTP start, Tailscale registration, rebind —
     // now happens on net_worker. See net_worker_task().
     net_worker_notify();
@@ -838,8 +866,9 @@ void on_wifi_event(const wifi_manager_event_t event)
   case WIFI_MGR_NO_MATCH:
   case WIFI_MGR_ALL_FAILED:
     ESP_LOGW(tag, "WiFi unavailable (event=%d) — will retry with backoff", (int) event);
-    set_unverified(false); // no connection at all now; the yellow state no longer applies
-    set_link_status(WIFI_STATUS_DISCONNECTED);
+    // Both in one step: no connection at all now, so the yellow state no longer applies. Clearing
+    // the flag first would publish a green CONNECTED on the way past.
+    set_link(WIFI_STATUS_DISCONNECTED, true);
     schedule_reconnect();
     break;
   }
