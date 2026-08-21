@@ -19,12 +19,23 @@ static lv_obj_t *s_sntp_icon = NULL;
 static lv_obj_t *s_ts_icon = NULL;
 static lv_timer_t *s_bat_timer = NULL;
 static lv_timer_t *s_bat_blink_timer = NULL;
+static lv_timer_t *s_reconcile_timer = NULL;
 static status_bar_battery_cb_t s_battery_cb = NULL;
 
 #define BATT_BLINK_PERIOD_MS 500
 
+// Published WiFi status: written by whatever task learns it (wifi task, SNTP task, the BLE event
+// loop), painted only on the LVGL task by the reconcile section below. Persisting it across screen
+// switches is what lets the icon restore on recreate.
+static volatile wifi_status_t s_pub_wifi = WIFI_STATUS_DISCONNECTED;
+
+// What the icon currently shows. LVGL task only — never written by a publisher.
+static wifi_status_t s_painted_wifi = WIFI_STATUS_DISCONNECTED;
+
+// Defined with the reconcile section below; declared here for battery_timer_cb()'s backstop call.
+static void reconcile_wifi(void);
+
 // Persist status across screen switches so icons restore correctly on recreate
-static wifi_status_t s_last_wifi_status = WIFI_STATUS_DISCONNECTED;
 static sntp_status_t s_last_sntp_status = SNTP_STATUS_IDLE;
 static ts_status_t s_last_ts_status = TS_STATUS_IDLE;
 
@@ -148,13 +159,118 @@ static void battery_timer_cb(lv_timer_t *timer) // NOLINT(readability-non-const-
     s_battery_cb(view);
   }
 
+  // Backstop: if lv_timer_create() failed for the reconcile timer, this is the only thing left
+  // that can move the WiFi icon. Costs one enum compare every 30s.
+  reconcile_wifi();
+
   // Re-align entire chain (text width may have changed)
   realign_chain();
 }
 
 // ============================================================
+// Published WiFi status -> reconcile
+//
+// Foreign tasks publish a desired status and never paint. This timer and status_bar_create() are
+// the only things that reconcile it onto the icon, and both run on the LVGL task — so no foreign
+// task ever takes the LVGL lock to move this icon, and no paint can be silently skipped.
+//
+// Reconciling is a comparison against what is on screen, deliberately, not a dirty flag. The two
+// cores give `volatile` no ordering guarantee, so a flag could become visible before the value it
+// refers to; the reconcile would then clear the flag, paint the stale value, and — CONNECTED and
+// NO_INTERNET being terminal states with no follow-up event — never repaint. Comparing instead
+// makes a torn read cost one 250 ms tick and nothing else: the next tick still sees a difference
+// and corrects it.
+// ============================================================
+#define RECONCILE_PERIOD_MS 250
+
+static void paint_wifi_status(wifi_status_t status)
+{
+  switch (status)
+  {
+  case WIFI_STATUS_DISCONNECTED:
+    lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
+    lv_obj_set_style_text_opa(s_wifi_icon, LV_OPA_40, 0);
+    lv_obj_remove_local_style_prop(s_wifi_icon, LV_STYLE_TEXT_COLOR, 0);
+    break;
+
+  case WIFI_STATUS_SCANNING:
+    lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
+    lv_obj_set_style_text_opa(s_wifi_icon, LV_OPA_70, 0);
+    lv_obj_remove_local_style_prop(s_wifi_icon, LV_STYLE_TEXT_COLOR, 0);
+    break;
+
+  case WIFI_STATUS_CONNECTING:
+    lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
+    lv_obj_set_style_text_opa(s_wifi_icon, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_ORANGE), 0);
+    break;
+
+  case WIFI_STATUS_VERIFYING:
+    lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
+    lv_obj_set_style_text_opa(s_wifi_icon, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_LIGHT_BLUE), 0);
+    break;
+
+  case WIFI_STATUS_CONNECTED:
+    lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
+    lv_obj_set_style_text_opa(s_wifi_icon, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_GREEN), 0);
+    break;
+
+  case WIFI_STATUS_NO_INTERNET:
+    // Yellow, not green: the association and the IP lease are real, so this is not a
+    // disconnection, but the DNS probe failed and anything needing the internet — NTP above all
+    // — will not work. Without this the device showed a plain green icon while displaying 1970.
+    lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
+    lv_obj_set_style_text_opa(s_wifi_icon, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_YELLOW), 0);
+    break;
+
+  case WIFI_STATUS_PROVISIONING:
+    lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
+    lv_obj_set_style_text_opa(s_wifi_icon, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_CYAN), 0);
+    break;
+  }
+
+  // Re-align entire chain after icon change
+  realign_chain();
+}
+
+// Paints unconditionally. Used by status_bar_create(), where the icon is a brand-new object and
+// nothing can be inferred from s_painted_wifi.
+static void reconcile_wifi_force(void)
+{
+  if (!s_wifi_icon)
+  {
+    return;
+  }
+  const wifi_status_t want = s_pub_wifi; // read once: a publisher may write it at any moment
+  paint_wifi_status(want);
+  s_painted_wifi = want;
+}
+
+static void reconcile_wifi(void)
+{
+  if (!s_wifi_icon || s_pub_wifi == s_painted_wifi)
+  {
+    return;
+  }
+  reconcile_wifi_force();
+}
+
+static void reconcile_timer_cb(lv_timer_t *timer) // NOLINT(readability-non-const-parameter)
+{
+  (void) timer;
+  reconcile_wifi();
+}
+
+// ============================================================
 // Public API
 // ============================================================
+// clang-tidy scores this at 51 almost entirely from the two ESP_LOGE macro expansions; the
+// function itself is a flat sequence of widget creations with two timer null-checks.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void status_bar_create(lv_obj_t *parent)
 {
   // --- Battery percentage (top-right corner) ---
@@ -206,8 +322,16 @@ void status_bar_create(lv_obj_t *parent)
     ESP_LOGE(tag, "Battery timer creation failed — battery indicator will not update");
   }
 
-  // Restore last known status (survives screen transitions)
-  status_bar_set_wifi_status(s_last_wifi_status);
+  // --- LVGL timer: reconcile published status onto the icons ---
+  s_reconcile_timer = lv_timer_create(reconcile_timer_cb, RECONCILE_PERIOD_MS, NULL);
+  if (!s_reconcile_timer)
+  {
+    ESP_LOGE(tag, "Reconcile timer creation failed — WiFi indicator will not update");
+  }
+
+  // Reconcile immediately: this is also the restore-on-recreate path, which is why it paints
+  // unconditionally rather than comparing against what the previous icon showed.
+  reconcile_wifi_force();
   status_bar_set_sntp_status(s_last_sntp_status);
   status_bar_set_ts_status(s_last_ts_status);
 }
@@ -217,65 +341,11 @@ void status_bar_register_battery_cb(status_bar_battery_cb_t cb)
   s_battery_cb = cb;
 }
 
+// Publish only — callable from any task with no LVGL lock held. One store; nothing here touches
+// an LVGL object. The paint happens on the LVGL task, within one reconcile tick.
 void status_bar_set_wifi_status(wifi_status_t status)
 {
-  s_last_wifi_status = status;
-
-  if (!s_wifi_icon)
-  {
-    return;
-  }
-
-  switch (status)
-  {
-  case WIFI_STATUS_DISCONNECTED:
-    lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
-    lv_obj_set_style_text_opa(s_wifi_icon, LV_OPA_40, 0);
-    lv_obj_remove_local_style_prop(s_wifi_icon, LV_STYLE_TEXT_COLOR, 0);
-    break;
-
-  case WIFI_STATUS_SCANNING:
-    lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
-    lv_obj_set_style_text_opa(s_wifi_icon, LV_OPA_70, 0);
-    lv_obj_remove_local_style_prop(s_wifi_icon, LV_STYLE_TEXT_COLOR, 0);
-    break;
-
-  case WIFI_STATUS_CONNECTING:
-    lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
-    lv_obj_set_style_text_opa(s_wifi_icon, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_ORANGE), 0);
-    break;
-
-  case WIFI_STATUS_VERIFYING:
-    lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
-    lv_obj_set_style_text_opa(s_wifi_icon, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_LIGHT_BLUE), 0);
-    break;
-
-  case WIFI_STATUS_CONNECTED:
-    lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
-    lv_obj_set_style_text_opa(s_wifi_icon, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_GREEN), 0);
-    break;
-
-  case WIFI_STATUS_NO_INTERNET:
-    // Yellow, not green: the association and the IP lease are real, so this is not a
-    // disconnection, but the DNS probe failed and anything needing the internet — NTP above all
-    // — will not work. Without this the device showed a plain green icon while displaying 1970.
-    lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
-    lv_obj_set_style_text_opa(s_wifi_icon, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_YELLOW), 0);
-    break;
-
-  case WIFI_STATUS_PROVISIONING:
-    lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
-    lv_obj_set_style_text_opa(s_wifi_icon, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_CYAN), 0);
-    break;
-  }
-
-  // Re-align entire chain after icon change
-  realign_chain();
+  s_pub_wifi = status;
 }
 
 void status_bar_set_sntp_status(sntp_status_t status)
@@ -360,6 +430,7 @@ void status_bar_set_ts_status(ts_status_t status)
 void status_bar_destroy(void)
 {
   ui_timer_delete(&s_bat_timer);
+  ui_timer_delete(&s_reconcile_timer);
   ui_timer_delete(&s_bat_blink_timer);
   s_bat_icon = NULL;
   s_bat_pct = NULL;
