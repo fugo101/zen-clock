@@ -20,14 +20,16 @@ void app_main(void)
 
   // Initialize NVS and load settings
   settings_init();
-  settings_apply_timezone(settings_get_timezone_offset());
-  const bool is_light = settings_get_theme_light();
-  const uint8_t brightness = settings_get_brightness();
+  settings_apply_timezone(settings_get(SETTINGS_KEY_TZ_OFFSET));
+  const bool is_light = settings_get_bool(SETTINGS_KEY_THEME_LIGHT);
+  const uint8_t brightness = (uint8_t) settings_get(SETTINGS_KEY_BRIGHTNESS);
 
-  // Initialize deep sleep (auto-sleep timer + wakeup sources)
-  const uint32_t sleep_s = (uint32_t) settings_get_sleep_h() * 3600 + (uint32_t) settings_get_sleep_m() * 60 +
-                           (uint32_t) settings_get_sleep_s();
-  deep_sleep_init(sleep_s);
+  // Initialize deep sleep (auto-sleep timer + wakeup sources).
+  // This sequence stays hand-written rather than looping over the descriptor table: boot is
+  // initialization, not update (ui_init vs ui_set_theme, deep_sleep_init vs update_timeout, and
+  // a 2s backlight fade the live path deliberately does without), and the ordering below —
+  // display, then NVS, then the LVGL lock, then the backlight — is load-bearing.
+  deep_sleep_init(settings_get_sleep_seconds());
 
   // Initialize UI (self-contained: creates all widgets + timers)
   lvgl_port_lock(0);

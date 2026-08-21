@@ -99,10 +99,7 @@ Header: [`include/deep_sleep.h`](include/deep_sleep.h)
 #include "deep_sleep.h"
 
 // In app_main, after settings_init():
-uint32_t sleep_s = (uint32_t)settings_get_sleep_h() * 3600
-                 + (uint32_t)settings_get_sleep_m() * 60
-                 + (uint32_t)settings_get_sleep_s();
-deep_sleep_init(sleep_s);
+deep_sleep_init(settings_get_sleep_seconds());
 
 // In button handler — reset timer on every press:
 void on_button_press(int btn_id, bsp_btn_event_t event) {
