@@ -48,6 +48,10 @@ _Avoid_: Offline, degraded connection
 The lightweight MicroLink/Tailscale reconnect path used after a WiFi reconnect, which reopens sockets while preserving the existing VPN session and WireGuard keys, as opposed to the full `microlink_init()`/`microlink_start()` registration done only on first connect.
 _Avoid_: Reconnect, re-init
 
+**Retry backoff**:
+The single shared retry-pacing policy (`components/backoff/`) — 30 s, doubling, capped at 5 minutes, reset on success — that both the WiFi reconnect timer and the NTP re-sync loop arm from. A step is only consumed when a retry was actually armed, so a burst of failures can never inflate the delay while leaving nothing pending.
+_Avoid_: Retry timer, reconnect delay, exponential backoff (as if each caller had its own)
+
 **Status bar**:
 The persistent LVGL bar shown on every screen carrying the Tailscale, NTP, WiFi, and battery indicators — the single place battery/connection state is displayed, so no other screen duplicates it.
 _Avoid_: Header, top bar

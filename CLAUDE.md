@@ -113,6 +113,7 @@ mid-action now always lands instead of being silently dropped.
 
 | Component                      | Purpose                                                                                                                                                                                                                    |
 |--------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `components/backoff/`          | Shared retry-pacing policy (30 s → ×2 → 300 s, reset on success). Pure — no ESP-IDF headers — so it builds for the host-side `[env:native]` tests; symlinked into `test/test_pure_logic/`. Used by the WiFi reconnect timer (`src/app_handlers.c`) and the NTP re-sync loop |
 | `components/bsp/`              | Board Support: display init, battery (GPIO4/ADC1_CH3), backlight (LEDC), buttons                                                                                                                                           |
 | `components/ui/`               | LVGL UI — modular widgets, see below                                                                                                                                                                                       |
 | `components/wifi_manager/`     | WiFi state machine: IDLE → SCANNING → CONNECTING → VERIFYING → CONNECTED                                                                                                                                                   |
@@ -374,6 +375,12 @@ state within `STOP_TIMEOUT_MS`.
 Smaller gotchas that don't rise to an ADR (not hard-to-reverse architectural decisions) but are easy
 to "fix" back into a bug if you don't know why they're there. Architectural decisions live in
 `docs/adr/` instead — see Domain docs below.
+
+**Backoff:** `backoff_next_s()` takes an `armed` flag on purpose — `schedule_reconnect()` in
+`app_handlers.c` only consumes a step when `esp_timer_start_once()` actually succeeded, so a burst
+of failure events can't inflate the delay while leaving no retry pending. `RECONNECT_BUSY_RETRY_S`
+(the 5 s re-arm after `wifi_manager_start()` refuses) deliberately bypasses the policy entirely:
+that is not a failed attempt.
 
 **WiFi manager:** `BIT_STOP` is checked before `BIT_DISCONNECTED` in both VERIFYING and CONNECTED —
 `wifi_manager_stop()` raises both bits, and testing DISCONNECTED first would report a spurious

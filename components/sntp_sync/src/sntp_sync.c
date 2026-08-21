@@ -8,6 +8,8 @@
 
 #include "sntp_sync.h"
 
+#include "backoff.h"
+
 #include <esp_attr.h>
 #include <esp_log.h>
 #include <esp_netif_sntp.h>
@@ -24,10 +26,8 @@ static const char *const tag = "SNTP";
 
 // A failed sync must not wait out the full hour. The clock is showing the wrong time — often
 // 01/01/1970 on a first boot with no internet — and an hour is a long time to display that before
-// even trying again. Same shape as the WiFi reconnect backoff in app_handlers.c so the two behave
-// alike: start at 30 s, double, cap at 5 minutes, and reset once a sync lands.
-#define SNTP_RETRY_START_S 30
-#define SNTP_RETRY_MAX_S   300
+// even trying again. Retry pacing is the shared policy in components/backoff, the same one the
+// WiFi reconnect timer arms from: start at 30 s, double, cap at 5 minutes, reset once a sync lands.
 
 static bool s_synced = false;
 static sntp_sync_cb_t s_on_sync = NULL;
@@ -139,7 +139,13 @@ static void sntp_task(void *arg) // NOLINT(readability-non-const-parameter)
 
   // How long to wait before the next attempt. Full interval after a success, short backoff after
   // a failure — including the initial sync above, so a boot with no internet retries in 30 s.
-  uint32_t wait_s = s_synced ? SNTP_RESYNC_INTERVAL_S : SNTP_RETRY_START_S;
+  uint32_t retry_s = BACKOFF_START_S;
+  uint32_t wait_s = SNTP_RESYNC_INTERVAL_S;
+  if (!s_synced)
+  {
+    wait_s = retry_s;
+    retry_s = backoff_next_s(retry_s, true);
+  }
 
   // --- Periodic re-sync loop ---
   // On first iteration after deep sleep wake, skip_initial=true means we already
@@ -168,16 +174,14 @@ static void sntp_task(void *arg) // NOLINT(readability-non-const-parameter)
       s_synced = true;
       s_last_sync_rtc = time(NULL);
       log_synced_time();
+      retry_s = BACKOFF_START_S;
       wait_s = SNTP_RESYNC_INTERVAL_S;
     }
     else
     {
       s_synced = false;
-      wait_s = (wait_s >= SNTP_RESYNC_INTERVAL_S) ? SNTP_RETRY_START_S : wait_s * 2;
-      if (wait_s > SNTP_RETRY_MAX_S)
-      {
-        wait_s = SNTP_RETRY_MAX_S;
-      }
+      wait_s = retry_s;
+      retry_s = backoff_next_s(retry_s, true);
       ESP_LOGW(tag, "NTP re-sync timeout — retrying in %lus", (unsigned long) wait_s);
     }
 

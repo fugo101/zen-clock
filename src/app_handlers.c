@@ -6,6 +6,7 @@
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include "backoff.h"
 #include "bsp.h"
 #include "deep_sleep.h"
 #include "wifi_manager.h"
@@ -28,14 +29,13 @@ static const char *const tag = "ZenClock";
 static esp_timer_handle_t s_reconnect_timer = NULL;
 static esp_timer_handle_t s_ts_poll_timer = NULL;
 
-// Reconnect backoff: 30s doubling to 5min. RECONNECT_BUSY_RETRY_S is the short re-arm used when
-// wifi_manager_start() refuses because the previous attempt has not unwound yet — that is not a
-// failed attempt, so it must not consume a backoff step.
-#define RECONNECT_BACKOFF_START_S 30
-#define RECONNECT_BACKOFF_MAX_S   300
-#define RECONNECT_BUSY_RETRY_S    5
+// Reconnect backoff policy lives in components/backoff (shared with the NTP re-sync loop).
+// RECONNECT_BUSY_RETRY_S is the short re-arm used when wifi_manager_start() refuses because the
+// previous attempt has not unwound yet — that is not a failed attempt, so it must not consume a
+// backoff step, and it deliberately bypasses the policy.
+#define RECONNECT_BUSY_RETRY_S 5
 
-static int s_reconnect_backoff_s = RECONNECT_BACKOFF_START_S;
+static uint32_t s_reconnect_backoff_s = BACKOFF_START_S;
 
 // How long ts_poll_cb waits for the LVGL lock before giving up on this tick.
 #define TS_POLL_LOCK_TIMEOUT_MS 50
@@ -57,7 +57,7 @@ static bool s_wifi_unverified = false;
 // compiler from caching the pointer across the two task contexts.
 static microlink_t *volatile s_ml = NULL;
 
-static bool schedule_reconnect_in(int delay_s);
+static bool schedule_reconnect_in(uint32_t delay_s);
 
 // The device must survive an indefinite outage: no WiFi, or out of range. Every path out of this
 // callback has to leave exactly one retry armed, or the clock goes offline until it is rebooted.
@@ -79,7 +79,7 @@ static void reconnect_timer_cb(void *arg)
 
 // Arms the one-shot retry timer. Returns whether a retry is now pending.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-static bool schedule_reconnect_in(const int delay_s)
+static bool schedule_reconnect_in(const uint32_t delay_s)
 {
   if (!s_reconnect_timer)
   {
@@ -102,7 +102,7 @@ static bool schedule_reconnect_in(const int delay_s)
     ESP_LOGE(tag, "Failed to arm reconnect timer: %s", esp_err_to_name(ret));
     return false;
   }
-  ESP_LOGI(tag, "WiFi offline — retry in %ds", delay_s);
+  ESP_LOGI(tag, "WiFi offline — retry in %lus", (unsigned long) delay_s);
   return true;
 }
 
@@ -110,11 +110,8 @@ static void schedule_reconnect(void)
 {
   // Advance the backoff only when something was actually armed. Otherwise a burst of failure
   // events inflates the delay while leaving no retry pending at all.
-  if (schedule_reconnect_in(s_reconnect_backoff_s))
-  {
-    s_reconnect_backoff_s =
-        (s_reconnect_backoff_s * 2 > RECONNECT_BACKOFF_MAX_S) ? RECONNECT_BACKOFF_MAX_S : s_reconnect_backoff_s * 2;
-  }
+  const bool armed = schedule_reconnect_in(s_reconnect_backoff_s);
+  s_reconnect_backoff_s = backoff_next_s(s_reconnect_backoff_s, armed);
 }
 
 static void cancel_reconnect(void)
@@ -123,7 +120,7 @@ static void cancel_reconnect(void)
   {
     esp_timer_stop(s_reconnect_timer);
   }
-  s_reconnect_backoff_s = RECONNECT_BACKOFF_START_S;
+  s_reconnect_backoff_s = BACKOFF_START_S;
 }
 
 // ============================================================
