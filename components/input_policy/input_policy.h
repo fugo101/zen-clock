@@ -44,25 +44,43 @@ extern "C"
   } input_outcome_t;
 
   /**
-   * @brief Decide what a button press means. Pure: no side effects, no hardware, no LVGL.
+   * @brief Decide what a button press means, ignoring the provisioning overlay.
+   * Pure: no side effects, no hardware, no LVGL.
    *
-   * Resolves, in priority order, the four guards that used to be fused into on_button_press():
-   *   1. Emergency IO14 hold          -> INPUT_OUTCOME_RESET_WIFI
-   *   2. Both buttons held long       -> INPUT_OUTCOME_DEEP_SLEEP
-   *   3. QR overlay up                -> INPUT_OUTCOME_DISMISS_PROV (BACK) or INPUT_OUTCOME_SWALLOW
-   *   4. Otherwise                    -> INPUT_OUTCOME_NAV
+   * Resolves the two guards that outrank the overlay, then falls back to the button -> action
+   * mapping:
+   *   1. Emergency IO14 hold    -> INPUT_OUTCOME_RESET_WIFI
+   *   2. Both buttons held long -> INPUT_OUTCOME_DEEP_SLEEP
+   *   3. Otherwise              -> INPUT_OUTCOME_NAV
    *
-   * The emergency and deep-sleep outcomes deliberately outrank the overlay guard, matching the
-   * order the guards were written in: the emergency hold is an escape hatch that must stay
-   * reachable from any screen, and the sleep combo is declined by deep_sleep's own inhibit
-   * callback while the QR is up rather than by this policy.
+   * Split from the overlay guard so the caller can resolve these two *before* touching LVGL:
+   * both are escape hatches, and reading prov_screen_is_visible() first would put an unbounded
+   * lvgl_port_lock(0) on their path and stall bsp_buttons.c's held_ms behind a screen repaint.
+   * The sleep combo is declined while the QR is up by deep_sleep's own inhibit callback, not by
+   * this policy.
    *
    * @param btn             which button fired
    * @param event           short / long / emergency
-   * @param other_pin_level raw level of the *other* button's pin, active-low (0 = pressed)
-   * @param prov_visible    whether the provisioning QR overlay is currently on screen
+   * @param other_pin_level raw level of the *other* button's pin, active-low (0 = pressed).
+   *                        Sample it before any blocking call: the other button is still
+   *                        physically down at LONG-fire time and may be released a moment later.
    */
-  input_outcome_t input_policy_decide(input_btn_t btn, input_event_t event, int other_pin_level, bool prov_visible);
+  input_outcome_t input_policy_decide(input_btn_t btn, input_event_t event, int other_pin_level);
+
+  /**
+   * @brief Apply the QR-overlay guard to a decided outcome. Pure.
+   *
+   * Only INPUT_OUTCOME_NAV is affected — everything else passes through untouched, so calling
+   * this unconditionally is always correct; the caller skips it purely to avoid the LVGL lock
+   * that reading @p prov_visible costs.
+   *
+   * The overlay is a child of whatever screen is active, so any nav transition would delete it
+   * and nothing would ever put it back — provisioning would keep advertising behind a blank UI.
+   * Nav actions are swallowed while it is up, except BACK, which dismisses it: a device that has
+   * never been provisioned stays in this state indefinitely and still has to be usable as a
+   * clock.
+   */
+  input_outcome_t input_policy_apply_overlay(input_outcome_t outcome, bool prov_visible);
 
 #ifdef __cplusplus
 }

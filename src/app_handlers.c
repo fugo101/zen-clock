@@ -419,19 +419,26 @@ void on_button_press(const int btn_id, const bsp_btn_event_t event)
   // request has left the timer behind and the sleep task is committed to it.
   deep_sleep_cancel();
 
-  // Active-low: 0 = pressed. Read here, not inside the policy, so the decision stays pure.
+  // Sampled before anything that can block. The sleep combo means "the other button is still
+  // down as this one fires LONG" — reading the pad after an lvgl_port_lock(0) would let a
+  // release during a screen repaint turn the combo into a stray SELECT.
   const gpio_num_t other = (btn_id == BSP_BTN_BOOT) ? GPIO_NUM_14 : GPIO_NUM_0;
+  const int other_level = gpio_get_level(other); // active-low: 0 = pressed
 
-  // prov_screen_is_visible() needs the LVGL lock and input_policy_decide() needs the answer up
-  // front, so the read happens before the decision instead of inside the overlay branch. It is a
-  // single pointer test with no rendering behind it, and nothing else runs under this lock for
-  // long — nav action callbacks were moved off it deliberately (see post_to_worker below).
-  lvgl_port_lock(0);
-  const bool prov_visible = prov_screen_is_visible();
-  lvgl_port_unlock();
+  input_outcome_t outcome = input_policy_decide((input_btn_t) btn_id, (input_event_t) event, other_level);
 
-  const input_outcome_t outcome =
-      input_policy_decide((input_btn_t) btn_id, (input_event_t) event, gpio_get_level(other), prov_visible);
+  // The overlay guard only ever rewrites a NAV outcome, so the emergency hold and the sleep
+  // combo resolve without touching LVGL at all — lvgl_port_lock(0) waits portMAX_DELAY, and
+  // parking the button task behind a repaint also stalls bsp_buttons.c's held_ms, which is what
+  // makes the combo unreachable in the first place. Applying it unconditionally would be
+  // correct, just needlessly blocking.
+  if (outcome.kind == INPUT_OUTCOME_NAV)
+  {
+    lvgl_port_lock(0);
+    const bool prov_visible = prov_screen_is_visible();
+    lvgl_port_unlock();
+    outcome = input_policy_apply_overlay(outcome, prov_visible);
+  }
 
   switch (outcome.kind)
   {

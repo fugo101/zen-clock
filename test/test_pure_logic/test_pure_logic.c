@@ -115,6 +115,14 @@ static void test_backoff_reset_to_start_then_doubles_again(void)
 #define PIN_PRESSED  0
 #define PIN_RELEASED 1
 
+// Runs both stages the way on_button_press() does. Applying the overlay guard unconditionally is
+// always correct — it only ever rewrites a NAV outcome — so the tests take the simple path.
+static input_outcome_t decide(const input_btn_t btn, const input_event_t event, const int other_pin_level,
+                              const bool prov_visible)
+{
+  return input_policy_apply_overlay(input_policy_decide(btn, event, other_pin_level), prov_visible);
+}
+
 static void assert_nav(const input_outcome_t outcome, const nav_action_t expected)
 {
   TEST_ASSERT_EQUAL_INT(INPUT_OUTCOME_NAV, outcome.kind);
@@ -123,15 +131,15 @@ static void assert_nav(const input_outcome_t outcome, const nav_action_t expecte
 
 static void test_input_policy_maps_all_four_button_events(void)
 {
-  assert_nav(input_policy_decide(INPUT_BTN_BOOT, INPUT_EVENT_SHORT, PIN_RELEASED, false), NAV_ACTION_UP);
-  assert_nav(input_policy_decide(INPUT_BTN_BOOT, INPUT_EVENT_LONG, PIN_RELEASED, false), NAV_ACTION_SELECT);
-  assert_nav(input_policy_decide(INPUT_BTN_IO14, INPUT_EVENT_SHORT, PIN_RELEASED, false), NAV_ACTION_DOWN);
-  assert_nav(input_policy_decide(INPUT_BTN_IO14, INPUT_EVENT_LONG, PIN_RELEASED, false), NAV_ACTION_BACK);
+  assert_nav(decide(INPUT_BTN_BOOT, INPUT_EVENT_SHORT, PIN_RELEASED, false), NAV_ACTION_UP);
+  assert_nav(decide(INPUT_BTN_BOOT, INPUT_EVENT_LONG, PIN_RELEASED, false), NAV_ACTION_SELECT);
+  assert_nav(decide(INPUT_BTN_IO14, INPUT_EVENT_SHORT, PIN_RELEASED, false), NAV_ACTION_DOWN);
+  assert_nav(decide(INPUT_BTN_IO14, INPUT_EVENT_LONG, PIN_RELEASED, false), NAV_ACTION_BACK);
 }
 
 static void test_input_policy_emergency_io14_resets_wifi(void)
 {
-  const input_outcome_t o = input_policy_decide(INPUT_BTN_IO14, INPUT_EVENT_EMERGENCY, PIN_RELEASED, false);
+  const input_outcome_t o = decide(INPUT_BTN_IO14, INPUT_EVENT_EMERGENCY, PIN_RELEASED, false);
   TEST_ASSERT_EQUAL_INT(INPUT_OUTCOME_RESET_WIFI, o.kind);
 }
 
@@ -139,7 +147,7 @@ static void test_input_policy_emergency_outranks_the_qr_overlay(void)
 {
   // The escape hatch has to work from the provisioning screen too — that is where a user with a
   // half-provisioned device is most likely to be holding the button.
-  const input_outcome_t o = input_policy_decide(INPUT_BTN_IO14, INPUT_EVENT_EMERGENCY, PIN_PRESSED, true);
+  const input_outcome_t o = decide(INPUT_BTN_IO14, INPUT_EVENT_EMERGENCY, PIN_PRESSED, true);
   TEST_ASSERT_EQUAL_INT(INPUT_OUTCOME_RESET_WIFI, o.kind);
 }
 
@@ -147,23 +155,23 @@ static void test_input_policy_emergency_on_boot_falls_back_to_select(void)
 {
   // The BSP only emits EMERGENCY for IO14; if that ever changes, a BOOT hold must still navigate
   // rather than vanish.
-  assert_nav(input_policy_decide(INPUT_BTN_BOOT, INPUT_EVENT_EMERGENCY, PIN_RELEASED, false), NAV_ACTION_SELECT);
+  assert_nav(decide(INPUT_BTN_BOOT, INPUT_EVENT_EMERGENCY, PIN_RELEASED, false), NAV_ACTION_SELECT);
 }
 
 static void test_input_policy_deep_sleep_combo_from_either_button(void)
 {
   // Whichever button reports LONG first wins the race; the other is still physically down.
   TEST_ASSERT_EQUAL_INT(INPUT_OUTCOME_DEEP_SLEEP,
-                        input_policy_decide(INPUT_BTN_BOOT, INPUT_EVENT_LONG, PIN_PRESSED, false).kind);
+                        decide(INPUT_BTN_BOOT, INPUT_EVENT_LONG, PIN_PRESSED, false).kind);
   TEST_ASSERT_EQUAL_INT(INPUT_OUTCOME_DEEP_SLEEP,
-                        input_policy_decide(INPUT_BTN_IO14, INPUT_EVENT_LONG, PIN_PRESSED, false).kind);
+                        decide(INPUT_BTN_IO14, INPUT_EVENT_LONG, PIN_PRESSED, false).kind);
 }
 
 static void test_input_policy_short_press_never_sleeps(void)
 {
   // Holding one button while tapping the other must not sleep the device.
-  assert_nav(input_policy_decide(INPUT_BTN_BOOT, INPUT_EVENT_SHORT, PIN_PRESSED, false), NAV_ACTION_UP);
-  assert_nav(input_policy_decide(INPUT_BTN_IO14, INPUT_EVENT_SHORT, PIN_PRESSED, false), NAV_ACTION_DOWN);
+  assert_nav(decide(INPUT_BTN_BOOT, INPUT_EVENT_SHORT, PIN_PRESSED, false), NAV_ACTION_UP);
+  assert_nav(decide(INPUT_BTN_IO14, INPUT_EVENT_SHORT, PIN_PRESSED, false), NAV_ACTION_DOWN);
 }
 
 static void test_input_policy_deep_sleep_combo_outranks_the_qr_overlay(void)
@@ -171,18 +179,18 @@ static void test_input_policy_deep_sleep_combo_outranks_the_qr_overlay(void)
   // The policy still reports the combo while the QR is up; declining it is deep_sleep's own
   // inhibit callback's job, not this module's.
   TEST_ASSERT_EQUAL_INT(INPUT_OUTCOME_DEEP_SLEEP,
-                        input_policy_decide(INPUT_BTN_BOOT, INPUT_EVENT_LONG, PIN_PRESSED, true).kind);
+                        decide(INPUT_BTN_BOOT, INPUT_EVENT_LONG, PIN_PRESSED, true).kind);
 }
 
 static void test_input_policy_qr_overlay_swallows_navigation(void)
 {
   // Any transition would delete the overlay and nothing would put it back.
   TEST_ASSERT_EQUAL_INT(INPUT_OUTCOME_SWALLOW,
-                        input_policy_decide(INPUT_BTN_BOOT, INPUT_EVENT_SHORT, PIN_RELEASED, true).kind);
+                        decide(INPUT_BTN_BOOT, INPUT_EVENT_SHORT, PIN_RELEASED, true).kind);
   TEST_ASSERT_EQUAL_INT(INPUT_OUTCOME_SWALLOW,
-                        input_policy_decide(INPUT_BTN_BOOT, INPUT_EVENT_LONG, PIN_RELEASED, true).kind);
+                        decide(INPUT_BTN_BOOT, INPUT_EVENT_LONG, PIN_RELEASED, true).kind);
   TEST_ASSERT_EQUAL_INT(INPUT_OUTCOME_SWALLOW,
-                        input_policy_decide(INPUT_BTN_IO14, INPUT_EVENT_SHORT, PIN_RELEASED, true).kind);
+                        decide(INPUT_BTN_IO14, INPUT_EVENT_SHORT, PIN_RELEASED, true).kind);
 }
 
 static void test_input_policy_qr_overlay_back_dismisses(void)
@@ -190,7 +198,25 @@ static void test_input_policy_qr_overlay_back_dismisses(void)
   // BACK (IO14 long) is the one action that gets through: an unprovisioned device sits here
   // indefinitely and still has to be usable as a clock.
   TEST_ASSERT_EQUAL_INT(INPUT_OUTCOME_DISMISS_PROV,
-                        input_policy_decide(INPUT_BTN_IO14, INPUT_EVENT_LONG, PIN_RELEASED, true).kind);
+                        decide(INPUT_BTN_IO14, INPUT_EVENT_LONG, PIN_RELEASED, true).kind);
+}
+
+static void test_input_policy_overlay_guard_leaves_escape_hatches_alone(void)
+{
+  // on_button_press() skips this call for non-NAV outcomes to stay off the LVGL lock; that is
+  // only safe because applying it would have changed nothing.
+  const input_outcome_t reset = input_policy_decide(INPUT_BTN_IO14, INPUT_EVENT_EMERGENCY, PIN_RELEASED);
+  const input_outcome_t sleep = input_policy_decide(INPUT_BTN_BOOT, INPUT_EVENT_LONG, PIN_PRESSED);
+  TEST_ASSERT_EQUAL_INT(reset.kind, input_policy_apply_overlay(reset, true).kind);
+  TEST_ASSERT_EQUAL_INT(sleep.kind, input_policy_apply_overlay(sleep, true).kind);
+}
+
+static void test_input_policy_boot_emergency_is_still_swallowed_by_the_overlay(void)
+{
+  // The BOOT-emergency fallback degrades to SELECT, so it must stay subject to the overlay guard
+  // — letting it through would delete the QR and nothing would put it back.
+  TEST_ASSERT_EQUAL_INT(INPUT_OUTCOME_SWALLOW,
+                        decide(INPUT_BTN_BOOT, INPUT_EVENT_EMERGENCY, PIN_RELEASED, true).kind);
 }
 
 int main(void)
@@ -216,5 +242,7 @@ int main(void)
   RUN_TEST(test_input_policy_deep_sleep_combo_outranks_the_qr_overlay);
   RUN_TEST(test_input_policy_qr_overlay_swallows_navigation);
   RUN_TEST(test_input_policy_qr_overlay_back_dismisses);
+  RUN_TEST(test_input_policy_overlay_guard_leaves_escape_hatches_alone);
+  RUN_TEST(test_input_policy_boot_emergency_is_still_swallowed_by_the_overlay);
   return UNITY_END();
 }

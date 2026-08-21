@@ -92,7 +92,7 @@ All event callbacks and nav wiring live here:
 
 | Symbol                                  | Role                                                                                                                     |
 |-----------------------------------------|--------------------------------------------------------------------------------------------------------------------------|
-| `on_button_press`                       | Adapter over `input_policy_decide()` — reads the other button's pin + QR visibility, then dispatches the returned outcome |
+| `on_button_press`                       | Adapter over `input_policy` — samples the other button's pin, decides, reads QR visibility only for a NAV outcome, dispatches |
 | `on_wifi_event`                         | WiFi manager state machine transitions; calls `microlink_init/start` on first CONNECTED, `microlink_rebind` on reconnect |
 | `on_ble_prov_event`                     | BLE provisioning lifecycle events                                                                                        |
 | `on_sntp_sync`                          | NTP sync status updates                                                                                                  |
@@ -114,7 +114,7 @@ mid-action now always lands instead of being silently dropped.
 | Component                      | Purpose                                                                                                                                                                                                                    |
 |--------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `components/backoff/`          | Shared retry-pacing policy (30 s → ×2 → 300 s, reset on success). Pure — no ESP-IDF headers — so it builds for the host-side `[env:native]` tests; symlinked into `test/test_pure_logic/`. Used by the WiFi reconnect timer (`src/app_handlers.c`) and the NTP re-sync loop |
-| `components/input_policy/`     | Pure decision behind `on_button_press()`: emergency IO14 hold, the two-button deep-sleep combo, the button→`nav_action_t` mapping, and the QR-overlay swallow/dismiss rule, all resolved by `input_policy_decide()`. No ESP-IDF headers — symlinked into `test/test_pure_logic/` alongside its `nav.h` |
+| `components/input_policy/`     | Pure decision behind `on_button_press()`: emergency IO14 hold, the two-button deep-sleep combo, the button→`nav_action_t` mapping, and the QR-overlay swallow/dismiss rule. Two pure stages: `input_policy_decide()` resolves the escape hatches, `input_policy_apply_overlay()` guards a NAV outcome. No ESP-IDF headers — symlinked into `test/test_pure_logic/` alongside its `nav.h` |
 | `components/bsp/`              | Board Support: display init, battery (GPIO4/ADC1_CH3), backlight (LEDC), buttons                                                                                                                                           |
 | `components/ui/`               | LVGL UI — modular widgets, see below                                                                                                                                                                                       |
 | `components/wifi_manager/`     | WiFi state machine: IDLE → SCANNING → CONNECTING → VERIFYING → CONNECTED                                                                                                                                                   |
@@ -406,11 +406,16 @@ second time.
 
 **Input policy:** `input_policy.h` re-declares the BSP button/event enums rather than including
 `bsp.h`, which pulls in `esp_lvgl_port.h` and would keep the policy off the host test bench;
-`_Static_assert`s in `app_handlers.c` fail the build if the two ever drift. `on_button_press()`
-reads `prov_screen_is_visible()` under the LVGL lock *before* deciding, because the decision is
-pure and needs that input up front — keep that read short, it is one pointer test. Emergency hold
-and the sleep combo deliberately outrank the overlay guard; the sleep combo is declined while the
-QR is up by `deep_sleep`'s inhibit callback, not by the policy.
+`_Static_assert`s in `app_handlers.c` fail the build if the two ever drift. The overlay guard is
+a *second* pure stage on purpose: `prov_screen_is_visible()` needs the LVGL lock, and
+`lvgl_port_lock(0)` waits `portMAX_DELAY`, so resolving the emergency hold and the sleep combo
+first keeps both escape hatches off the lock — parking the button task behind a repaint also
+stalls `bsp_buttons.c`'s `held_ms`, which is what makes the combo unreachable to begin with. For
+the same reason `gpio_get_level()` on the other button is sampled *before* anything that can
+block: the combo means "still down as this one fires LONG", and a release during a repaint would
+turn it into a stray SELECT. Applying the overlay stage unconditionally would be correct, just
+needlessly blocking. The sleep combo is declined while the QR is up by `deep_sleep`'s inhibit
+callback, not by the policy.
 
 **Buttons:** the ISR passes `NULL` for `pxHigherPriorityTaskWoken`. This is legal (FreeRTOS guards
 it) and unobservable here since the very next thing the task does is a 50ms debounce delay.
