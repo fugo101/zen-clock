@@ -242,6 +242,17 @@ Tailscale poll timer), skip the paint on failure, and — critically — **never
 `lvgl_port_unlock()` on the failure path**: a timed-out `lvgl_port_lock()` does not hold the mutex,
 so unlocking anyway is a real bug, not a no-op.
 
+A bounded lock is only legitimate where **a later event repeats the paint**. The WiFi status icon
+was not such a place — a timeout on entering a terminal state (`CONNECTED`, `NO_INTERNET`) left the
+icon stale for the life of the connection, because there is no next event. It is **published**
+instead: `status_bar_set_wifi_status()` writes a value and returns, taking no lock from any task,
+and `status_bar.c`'s 250 ms reconcile timer paints it on the LVGL task, comparing against what is
+on screen (not a dirty flag — the two cores give `volatile` no ordering guarantee, so a torn read
+must cost one tick, not a permanent mispaint). `status_bar_create()` replays the published value,
+so a screen change cannot resurrect a stale one. Prefer publishing over locking for anything a
+foreign task wants on screen; the bounded lock survives only for
+`device_info_screen_set_ml()`, where the System Info screen's own 10s timer genuinely repeats it.
+
 **Never hardcode colors** (e.g., `lv_color_white()`). The UI supports Light and Dark themes — use theme-aware color
 access.
 

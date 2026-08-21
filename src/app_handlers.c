@@ -42,9 +42,9 @@ static uint32_t s_reconnect_backoff_s = BACKOFF_START_S;
 #define TS_POLL_LOCK_TIMEOUT_MS 50
 #define TS_POLL_PERIOD_US       (10ULL * 1000000ULL)
 
-// How long on_wifi_event() waits for the LVGL lock before skipping a status paint. Same 50ms
-// value as TS_POLL_LOCK_TIMEOUT_MS, kept as its own constant since the two calls have different
-// reasons for existing (see wifi_event_lvgl_lock() below).
+// How long on_wifi_event() waits for the LVGL lock before skipping a paint. Same 50ms value as
+// TS_POLL_LOCK_TIMEOUT_MS, kept as its own constant since the two calls have different reasons
+// for existing (see wifi_event_lvgl_lock() below).
 #define WIFI_EVENT_LOCK_TIMEOUT_MS 50
 static bool s_sntp_started = false;
 
@@ -620,13 +620,20 @@ static bool microlink_configured(void)
 // synchronously on the wifi task from inside fire_event(), including calls made deep inside
 // try_connect_candidate(); an unbounded lvgl_port_lock(0) there could stall the wifi task for as
 // long as the LVGL task is busy, invisible to wifi_manager_stop()'s STOP_TIMEOUT_MS polling.
-// Every WiFi status gets repainted on the next event, so skipping one paint costs nothing. On
-// failure the mutex is NOT held: callers must not call lvgl_port_unlock() when this returns false.
+//
+// Only survives for device_info_screen_set_ml(), where a skipped update is genuinely free: the
+// System Info screen re-reads the same handle on its own 10s timer. It must never be used for
+// anything a later event will not repeat — the WiFi status icon used to be exactly that, and a
+// timeout on entering a terminal state (CONNECTED / NO_INTERNET) left the icon stale for as long
+// as the connection lasted, because there is no next event. That icon is published now.
+//
+// On failure the mutex is NOT held: callers must not call lvgl_port_unlock() when this returns
+// false.
 static bool wifi_event_lvgl_lock(void)
 {
   if (!lvgl_port_lock(WIFI_EVENT_LOCK_TIMEOUT_MS))
   {
-    ESP_LOGD(tag, "LVGL busy — skipping a WiFi status paint");
+    ESP_LOGD(tag, "LVGL busy — skipping a WiFi-task paint");
     return false;
   }
   return true;
@@ -638,40 +645,25 @@ void on_wifi_event(const wifi_manager_event_t event)
   switch (event)
   {
   case WIFI_MGR_SCANNING:
-    if (wifi_event_lvgl_lock())
-    {
-      status_bar_set_wifi_status(WIFI_STATUS_SCANNING);
-      lvgl_port_unlock();
-    }
+    status_bar_set_wifi_status(WIFI_STATUS_SCANNING);
     break;
 
   case WIFI_MGR_CONNECTING:
-    if (wifi_event_lvgl_lock())
-    {
-      status_bar_set_wifi_status(WIFI_STATUS_CONNECTING);
-      lvgl_port_unlock();
-    }
+    status_bar_set_wifi_status(WIFI_STATUS_CONNECTING);
     break;
 
   case WIFI_MGR_GOT_IP:
     ESP_LOGI(tag, "WiFi got IP — verifying internet...");
-    if (wifi_event_lvgl_lock())
-    {
-      status_bar_set_wifi_status(WIFI_STATUS_VERIFYING);
-      lvgl_port_unlock();
-    }
+    status_bar_set_wifi_status(WIFI_STATUS_VERIFYING);
     break;
 
   case WIFI_MGR_CONNECTED:
     cancel_reconnect();
-    // Cleared before painting: a later connection to a working network must not inherit the flag
-    // from an earlier one. WIFI_MGR_NO_INTERNET, if it comes, arrives immediately after this.
+    // Cleared before publishing: a later connection to a working network must not inherit the
+    // flag from an earlier one. WIFI_MGR_NO_INTERNET, if it comes, arrives immediately after
+    // this and publishes over the green.
     s_wifi_unverified = false;
-    if (wifi_event_lvgl_lock())
-    {
-      status_bar_set_wifi_status(WIFI_STATUS_CONNECTED);
-      lvgl_port_unlock();
-    }
+    status_bar_set_wifi_status(WIFI_STATUS_CONNECTED);
     if (!s_sntp_started)
     {
       ESP_LOGI(tag, "WiFi verified online — starting NTP sync...");
@@ -752,11 +744,7 @@ void on_wifi_event(const wifi_manager_event_t event)
     // "online", which is the honest reading when NTP is about to fail.
     ESP_LOGW(tag, "Associated but no internet — clock time may be wrong");
     s_wifi_unverified = true;
-    if (wifi_event_lvgl_lock())
-    {
-      status_bar_set_wifi_status(WIFI_STATUS_NO_INTERNET);
-      lvgl_port_unlock();
-    }
+    status_bar_set_wifi_status(WIFI_STATUS_NO_INTERNET);
     break;
 
   case WIFI_MGR_SCAN_DONE:
@@ -767,11 +755,7 @@ void on_wifi_event(const wifi_manager_event_t event)
     ESP_LOGW(tag, "No WiFi credential stored — starting BLE provisioning");
     // Invariant 3: this runs on the wifi task, so the stop is only requested, not awaited.
     wifi_manager_stop();
-    if (wifi_event_lvgl_lock())
-    {
-      status_bar_set_wifi_status(WIFI_STATUS_PROVISIONING);
-      lvgl_port_unlock();
-    }
+    status_bar_set_wifi_status(WIFI_STATUS_PROVISIONING);
     start_provisioning_or_recover();
     break;
 
@@ -780,11 +764,7 @@ void on_wifi_event(const wifi_manager_event_t event)
   case WIFI_MGR_ALL_FAILED:
     ESP_LOGW(tag, "WiFi unavailable (event=%d) — will retry with backoff", (int) event);
     s_wifi_unverified = false; // no connection at all now; the yellow state no longer applies
-    if (wifi_event_lvgl_lock())
-    {
-      status_bar_set_wifi_status(WIFI_STATUS_DISCONNECTED);
-      lvgl_port_unlock();
-    }
+    status_bar_set_wifi_status(WIFI_STATUS_DISCONNECTED);
     schedule_reconnect();
     break;
   }

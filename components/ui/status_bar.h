@@ -81,9 +81,11 @@ extern "C"
   void status_bar_create(lv_obj_t *parent);
 
   /**
-   * @brief Update WiFi status indicator.
+   * @brief Publish the WiFi status indicator's desired state.
    *
-   * Must be called inside lvgl_port_lock()/unlock().
+   * Callable from any task, with or without the LVGL lock held — it writes a published value and
+   * returns. The status bar repaints it on the LVGL task within one reconcile tick (250 ms), and
+   * replays it whenever the bar is recreated on a screen change, so a publish can never be lost.
    */
   void status_bar_set_wifi_status(wifi_status_t status);
 
