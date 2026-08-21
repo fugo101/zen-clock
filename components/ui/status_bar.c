@@ -25,13 +25,14 @@ static status_bar_battery_cb_t s_battery_cb = NULL;
 #define BATT_BLINK_PERIOD_MS 500
 
 // Published status: written by whatever task learns it (the wifi task, the SNTP task, the BLE
-// event loop, the Tailscale poll timer), painted only on the LVGL task by the reconcile section
-// below. Persisting it across screen switches is what lets the icons restore on recreate.
+// event loop, the Tailscale poll timer), painted only by the reconcile section below. Persisting
+// it across screen switches is what lets the icons restore on recreate.
 static volatile wifi_status_t s_pub_wifi = WIFI_STATUS_DISCONNECTED;
 static volatile sntp_status_t s_pub_sntp = SNTP_STATUS_IDLE;
 static volatile ts_status_t s_pub_ts = TS_STATUS_IDLE;
 
-// What each icon currently shows. LVGL task only — never written by a publisher.
+// What each icon currently shows. Written only from reconcile_icons(), i.e. only with the LVGL
+// lock held — never by a publisher.
 static wifi_status_t s_painted_wifi = WIFI_STATUS_DISCONNECTED;
 static sntp_status_t s_painted_sntp = SNTP_STATUS_IDLE;
 static ts_status_t s_painted_ts = TS_STATUS_IDLE;
@@ -170,9 +171,12 @@ static void battery_timer_cb(lv_timer_t *timer) // NOLINT(readability-non-const-
 // ============================================================
 // Published status -> reconcile
 //
-// Foreign tasks publish a desired status and never paint. This timer and status_bar_create() are
-// the only things that reconcile it onto the icon, and both run on the LVGL task — so no foreign
-// task ever takes the LVGL lock to move these icons, and no paint can be silently skipped.
+// Foreign tasks publish a desired status and never paint. reconcile_icons() is the only thing that
+// paints them, and it must only ever be called with the LVGL lock held — from an LVGL timer, which
+// holds it by construction, or from status_bar_create(), whose callers (main.c at boot, nav.c on
+// the button task) take it themselves. Task affinity is not what makes this safe; the lock is.
+// The payoff is that no foreign task takes that lock to move an icon, and no paint can be
+// silently skipped.
 //
 // Reconciling is a comparison against what is on screen, deliberately, not a dirty flag. The two
 // cores give `volatile` no ordering guarantee, so a flag could become visible before the value it
@@ -400,14 +404,17 @@ void status_bar_create(lv_obj_t *parent)
   }
   else
   {
-    ESP_LOGE(tag, "Battery timer creation failed — battery indicator will not update");
+    ESP_LOGE(tag, "Battery timer creation failed — battery indicator will not update, and the "
+                  "status icons lose their 30s reconcile backstop");
   }
 
   // --- LVGL timer: reconcile published status onto the icons ---
   s_reconcile_timer = lv_timer_create(reconcile_timer_cb, RECONCILE_PERIOD_MS, NULL);
   if (!s_reconcile_timer)
   {
-    ESP_LOGE(tag, "Reconcile timer creation failed — WiFi indicator will not update");
+    // Not fatal on its own: battery_timer_cb() still reconciles every 30s. Only if both timers
+    // failed to allocate do the icons freeze at whatever status_bar_create() painted.
+    ESP_LOGE(tag, "Reconcile timer creation failed — status icons fall back to a 30s refresh");
   }
 
   // Reconcile immediately: this is also the restore-on-recreate path, which is why it paints
