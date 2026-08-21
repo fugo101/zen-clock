@@ -18,7 +18,14 @@ WiFi by hand. The full contract (five numbered invariants) is stated once, on th
 
 **There is deliberately no periodic DNS re-probe once `WIFI_ST_CONNECTED`.** `do_dns_probe()`
 contains an unbounded `getaddrinfo()`, and `wifi_manager_stop()` must be able to interrupt the
-CONNECTED state within its stop timeout — a background re-probe loop would risk blocking that. A
+CONNECTED state within its stop timeout — a background re-probe loop would risk blocking that.
+This constraint is real and is now actually enforced. For a long time it was not: the re-probe was
+rejected on these grounds while `on_wifi_event()`'s own CONNECTED branch blocked the same task on
+the same path for far longer — `sntp_sync_start()`'s 500 ms delay, then Tailscale registration,
+DERP and a WireGuard handshake, all unbounded. A concurrent `wifi_manager_stop()` burned its full
+`STOP_TIMEOUT_MS` and returned `ESP_ERR_TIMEOUT`, after which the caller handed the radio to BLE
+anyway. That work now runs on `net_worker` (`src/app_handlers.c`); the handler publishes the link
+state and returns. Either the constraint holds for everyone on that task or it holds for no one. A
 successful NTP sync clears the no-internet state instead, since reaching a time server is itself
 proof the internet works. The accepted cost: `do_dns_probe()` only proves DNS resolves, not that
 anything is reachable (a DNS server returning a null/portal IP for the probe host passes it while
@@ -29,12 +36,16 @@ IP lease are real and a LAN-only network is genuinely usable, so the state machi
 CONNECTED; the no-internet event just paints a different status-bar color over it. Reversing the
 order would silently disable the "still usable, just no internet" signal entirely.
 
-**`on_wifi_event()` uses a bounded 50ms LVGL lock, not the default unbounded one.** `fire_event()`
-runs synchronously on the wifi task, so an unbounded `lvgl_port_lock(0)` there could stall the wifi
-task invisibly to `wifi_manager_stop()`'s timeout. The tradeoff: a lock timeout skips that one
-paint, but every WiFi status is repainted on the next event, so nothing is lost. The same pattern is
-used for the Tailscale poll timer callback, for the same reason (both run outside LVGL-timer
-context).
+**~~`on_wifi_event()` uses a bounded 50ms LVGL lock, not the default unbounded one.~~ Superseded by
+ADR-0007.** The reasoning behind the bounded lock was right — `fire_event()` runs synchronously on
+the wifi task, so an unbounded `lvgl_port_lock(0)` there could stall it invisibly to
+`wifi_manager_stop()`'s timeout. The recorded tradeoff was not: *"a lock timeout skips that one
+paint, but every WiFi status is repainted on the next event, so nothing is lost."* No next event
+comes in the two terminal states. After `WIFI_MGR_CONNECTED` the wifi task parks in
+`xEventGroupWaitBits(..., portMAX_DELAY)` until a disconnect or a stop, and a skipped paint also
+skipped the status bar's cache — so a healthy connection could show "verifying" blue for hours, and
+every screen change repainted the stale value. `on_wifi_event()` now publishes the link state and
+takes no LVGL lock at all; see `docs/adr/0007-published-ui-state.md`.
 
 **All BLE provisioning teardown happens in the `NETWORK_PROV_END` handler, never eagerly.**
 `network_prov_mgr_stop_provisioning()` is documented as asynchronous (measured ~1.2s cleanup delay
