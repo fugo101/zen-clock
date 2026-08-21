@@ -63,7 +63,10 @@ static const char *const s_row_labels[ROW_COUNT] = {
 static int s_scroll = 0;
 static lv_obj_t *s_name_labels[ROW_COUNT] = {NULL};
 static lv_obj_t *s_value_labels[ROW_COUNT] = {NULL};
-static microlink_t *s_ml_handle = NULL;
+// volatile: published by the wifi task, read by this screen's 10s LVGL timer. Without it the
+// compiler may cache the load in update_tailscale() — same translation unit — and the TS rows
+// would sit on N/A after microlink_start().
+static microlink_t *volatile s_ml_handle = NULL;
 
 static lv_timer_t *s_timer_1s = NULL;
 static lv_timer_t *s_timer_10s = NULL;
@@ -322,10 +325,13 @@ void device_info_screen_create(lv_obj_t *parent)
   s_timer_10s = lv_timer_create(timer_10s_cb, 10000, NULL);
 }
 
+// Publish only: a single pointer store, callable from any task with no LVGL lock held. The
+// screen's own 10s timer paints it. Painting here instead is what used to force the wifi task to
+// take the LVGL lock — and that was the last caller keeping app_handlers.c's bounded-lock helper
+// alive.
 void device_info_screen_set_ml(microlink_t *ml)
 {
   s_ml_handle = ml;
-  update_tailscale();
 }
 
 void device_info_screen_scroll_up(void)

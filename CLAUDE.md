@@ -135,11 +135,11 @@ widgets.
 
 | Source                 | Role                                                                                              |
 |------------------------|---------------------------------------------------------------------------------------------------|
-| `ui.c`                 | Theme init + delegates to `nav_init()`; also exports `ui_apply_screen_bg()`                       |
+| `ui.c`                 | Theme init + delegates to `nav_init()`; owns the 250 ms **reconcile tick** that paints all published UI state; also exports `ui_apply_screen_bg()` |
 | `nav.c`                | **Navigation state machine** — owns all screen transitions (Clock ↔ Menu ↔ Settings) via a shared `show_screen()` helper |
 | `clock_face_text.c`    | HH:MM:SS (DS-Digital 48) + DD/MM/YYYY (DS-Digital 16), internal 1s LVGL timer                     |
-| `status_bar.c`         | Tailscale(⇄)/NTP(syncing-only)/WiFi/battery icons. The three status icons are published by foreign tasks and painted by a 250 ms reconcile timer — no caller takes the LVGL lock. 30s LVGL timer for battery, read via `bsp_battery_read()`, mapped by `battery_view()` and published as a `battery_view_t` through `status_bar_register_battery_cb()`. Nothing here decides what "low" means |
-| `prov_screen.c`        | QR code overlay shown during BLE provisioning                                                     |
+| `status_bar.c`         | Tailscale(⇄)/NTP(syncing-only)/WiFi/battery icons. The three status icons are published by foreign tasks and painted by `ui.c`'s reconcile tick — no caller takes the LVGL lock. 30s LVGL timer for battery, read via `bsp_battery_read()`, mapped by `battery_view()` and published as a `battery_view_t` through `status_bar_register_battery_cb()`. Nothing here decides what "low" means |
+| `prov_screen.c`        | QR code overlay shown during BLE provisioning. Show/hide publish an **intent**; the reconcile tick builds or tears down the overlay, and rebuilds it if a screen transition deletes it while the intent is still on |
 | `menu_screen.c`        | Menu list screen — row order is `menu_row_t` (`menu_screen.h`)                                    |
 | `settings_screen.c`    | Scrollable settings list with inline edit — 4 groups, 12 items (+ 4 section headers); row order is `settings_row_t` (`settings_screen.h`), the single source of truth |
 | `device_info_screen.c` | System Info screen — 11 read-only rows, scrollable (5 visible), timers 1s/10s. No Battery row — the status bar (visible on every screen) already covers it; see `docs/adr/0001-battery-percentage-source.md` |
@@ -233,29 +233,28 @@ lvgl_port_unlock();
 ```
 
 `lvgl_port_lock(0)` waits `portMAX_DELAY` — it is not a try-lock. That's fine for the boot path
-(`main.c`) and for LVGL-timer contexts, but **not** for a callback that runs on the wifi task or the
-shared `esp_timer` task: `on_wifi_event()` runs synchronously from inside `fire_event()` on the wifi
-task, so an unbounded lock there could stall it invisibly to `wifi_manager_stop()`'s
-`STOP_TIMEOUT_MS`. Such a callback uses a **bounded** 50 ms lock instead
-(`wifi_event_lvgl_lock()` in `app_handlers.c`), skips the paint on failure, and — critically —
-**never calls `lvgl_port_unlock()` on the failure path**: a timed-out `lvgl_port_lock()` does not
-hold the mutex, so unlocking anyway is a real bug, not a no-op.
+(`main.c`) and for LVGL-timer contexts, but **not** for a callback that runs on the wifi task, the
+BLE event loop or the shared `esp_timer` task.
 
-A bounded lock is only legitimate where **a later event repeats the paint**. The WiFi status icon
-was not such a place — a timeout on entering a terminal state (`CONNECTED`, `NO_INTERNET`) left the
-icon stale for the life of the connection, because there is no next event.
+**A foreign task publishes; it never paints.** `status_bar_set_{wifi,sntp,ts}_status()`,
+`prov_screen_show()/hide()` and `device_info_screen_set_ml()` write a value and return, taking no
+LVGL lock from any task. A 250 ms `lv_timer` in `ui.c` (`reconcile_cb`) holds the lock by
+construction and repaints what changed; `status_bar_create()` replays the published values when the
+bar is rebuilt on a screen change, and `battery_timer_cb` backstops the tick at 30 s. Reconciling
+**compares against what is on screen** rather than consuming a dirty flag — the two cores give
+`volatile` no ordering guarantee, so a torn read must cost one tick, not a permanent mispaint.
+`prov_screen_is_visible()` reports the published intent, not the widget, so the deep-sleep inhibit
+and the nav-action guard can both ask from their own tasks. See
+`docs/adr/0007-published-ui-state.md`.
 
-All three status icons are **published** instead. `status_bar_set_wifi_status()`,
-`status_bar_set_sntp_status()` and `status_bar_set_ts_status()` write a value and return, taking no
-lock from any task; `status_bar.c`'s 250 ms reconcile timer paints them on the LVGL task, comparing
-against what is on screen (not a dirty flag — the two cores give `volatile` no ordering guarantee,
-so a torn read must cost one tick, not a permanent mispaint). `status_bar_create()` replays the
-published values, so a screen change cannot resurrect a stale one, and `battery_timer_cb` backstops
-the reconcile at 30 s should its timer fail to allocate.
+The one surviving unbounded lock off the LVGL task is `nav_handle_action()` in `on_button_press()`,
+and it stays: a nav action is not state — the button task needs the transition to have happened
+before it knows what deferred work came out of it.
 
-Prefer publishing over locking for anything a foreign task wants on screen. `wifi_event_lvgl_lock()`
-survives only for `device_info_screen_set_ml()`, where the System Info screen's own 10s timer
-genuinely repeats the update.
+The bounded 50 ms lock (`wifi_event_lvgl_lock()`) is **gone**. It was only ever legitimate where a
+later event repeats the paint, and the WiFi status icon was not such a place — a timeout entering a
+terminal state (`CONNECTED`, `NO_INTERNET`) left the icon stale for the life of the connection,
+because there is no next event.
 
 **Never hardcode colors** (e.g., `lv_color_white()`). The UI supports Light and Dark themes — use theme-aware color
 access.

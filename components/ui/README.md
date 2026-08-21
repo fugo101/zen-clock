@@ -183,7 +183,13 @@ Icon chain (right-to-left): `[TS ⇄] [NTP ↻ — syncing or failed] [WiFi] [Ba
 
 `NO_INTERNET` clears when NTP next succeeds — reaching a time server proves the internet is back.
 
-Internal 30-second LVGL timer refreshes the battery view automatically. It is the only ADC poll in the
+`status_bar_set_wifi_status()`, `..._sntp_status()` and `..._ts_status()` **publish**: they write a
+value, take no lock, and paint nothing. `status_bar_reconcile(force)` — driven by `ui.c`'s 250 ms
+tick and by `status_bar_create()` with `force=true` — repaints any icon whose published value
+differs from what is on screen.
+
+Internal 30-second LVGL timer refreshes the battery view automatically, and backstops the reconcile
+tick should its timer fail to allocate. It is the only ADC poll in the
 UI; the reading is turned into a `battery_view_t` by `components/battery_view/` and both the painting
 here and the low-battery brightness clamp in `src/app_handlers.c` consume that same view. Nothing in
 this file decides what "low" means.
@@ -191,10 +197,18 @@ this file decides what "low" means.
 ### `prov_screen.h` — BLE provisioning overlay
 
 ```c
-void prov_screen_show(const char *device_name, const char *password); // full-screen QR overlay
-void prov_screen_hide(void);                    // remove overlay, reveal clock (BLE keeps advertising)
-bool prov_screen_is_visible(void);              // overlay currently on screen?
+void prov_screen_show(const char *device_name, const char *password); // publish: QR overlay up
+void prov_screen_hide(void);                    // publish: overlay down (BLE keeps advertising)
+bool prov_screen_is_visible(void);              // is the overlay *meant* to be up?
+void prov_screen_reconcile(void);               // LVGL task only — build/tear down to match
 ```
+
+Show and hide **publish an intent**; they take no LVGL lock and are callable from any task
+(the BLE default event loop, `btn_worker`). `ui.c`'s reconcile tick builds or tears down the
+overlay within one tick, and rebuilds it if a screen transition deletes it while the intent is
+still on. `prov_screen_is_visible()` reports that intent, not the widget, so it leads what is on
+screen by up to one tick in both directions — which is what its callers (the deep-sleep inhibit
+and the nav-action guard) want. See `docs/adr/0007-published-ui-state.md`.
 
 While the overlay is up, `on_button_press` swallows nav actions so no screen transition can delete it — except `BACK`,
 which hides it. Provisioning continues in the background; Settings → Network → Provisioning re-opens it. An unprovisioned
@@ -287,6 +301,10 @@ System Info screen (11 rows, 5 visible at a time)
 - **Shared styles for theme colors** — screen bg uses a single `lv_style_t`; inline `lv_obj_set_style_*` calls
   per-object won't auto-update on theme switch.
 - **LVGL lock required** — all external LVGL calls need `lvgl_port_lock(0)` / `lvgl_port_unlock()`.
+  The exception is the six **publish** functions — `status_bar_set_{wifi,sntp,ts}_status()`,
+  `prov_screen_show()/hide()`, `device_info_screen_set_ml()` — which touch no LVGL object and must
+  be called *without* wrapping them in a lock from a foreign task. `*_reconcile()` is the opposite:
+  LVGL lock required, and only `ui.c`'s tick and `status_bar_create()` may call it.
 - **Nav owns screen lifecycle** — do not call widget constructors from outside `nav.c`. Always call
   `ui_apply_screen_bg(scr)` after `lv_obj_create(NULL)` in `nav.c`.
 - **Clock face is swappable** — swap `clock_face_text.c` in `CMakeLists.txt`; `clock_face.h` interface stays the same.

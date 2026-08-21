@@ -16,7 +16,11 @@ extern "C"
   void device_info_screen_scroll_down(void);
   void device_info_screen_destroy(void);
 
-  /** Set the MicroLink handle for Tailscale status rows. Call after microlink_init(). NULL = disabled. */
+  /**
+   * Publish the MicroLink handle for the Tailscale status rows. Call after microlink_init();
+   * NULL = disabled. Callable from any task with no LVGL lock held — the screen's own 10s timer
+   * picks it up.
+   */
   void device_info_screen_set_ml(microlink_t *ml);
 
 #ifdef __cplusplus

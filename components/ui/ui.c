@@ -3,11 +3,40 @@
 
 #include "ui.h"
 #include "nav.h"
+#include "prov_screen.h"
+#include "status_bar.h"
 #include "lvgl.h"
+
+#include <esp_log.h>
+
+static const char *const tag = "UI";
 
 static bool s_is_light = true;
 static lv_style_t s_screen_bg_style;
 static bool s_style_inited = false;
+static lv_timer_t *s_reconcile_timer = NULL;
+
+// ============================================================
+// Reconcile tick
+//
+// The one place published UI state becomes pixels. Foreign tasks — the wifi task, the SNTP task,
+// the BLE event loop, the Tailscale poll timer, the button worker — publish what they want on
+// screen and return without touching LVGL. This timer runs inside lv_timer_handler(), so it holds
+// the LVGL lock by construction, and repaints only what has actually changed.
+//
+// It lives here rather than inside each widget because the overlay and the status bar have
+// different lifetimes: the status bar is destroyed and rebuilt on every screen change, and the
+// overlay may need building when no screen owns it yet. One tick outliving both is what makes a
+// publish impossible to lose. See docs/adr/0007-published-ui-state.md.
+// ============================================================
+#define UI_RECONCILE_PERIOD_MS 250
+
+static void reconcile_cb(lv_timer_t *timer) // NOLINT(readability-non-const-parameter)
+{
+  (void) timer;
+  status_bar_reconcile(false);
+  prov_screen_reconcile();
+}
 
 void ui_init(const bool is_light)
 {
@@ -24,6 +53,14 @@ void ui_init(const bool is_light)
   lv_disp_set_theme(dispp, theme);
 
   nav_init();
+
+  // After nav_init(): the first tick must find a status bar to paint.
+  s_reconcile_timer = lv_timer_create(reconcile_cb, UI_RECONCILE_PERIOD_MS, NULL);
+  if (!s_reconcile_timer)
+  {
+    ESP_LOGE(tag, "Reconcile timer creation failed — status icons fall back to the battery "
+                  "timer's 30s refresh and the provisioning QR will not appear");
+  }
 }
 
 void ui_set_theme(const bool is_light)

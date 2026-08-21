@@ -56,6 +56,25 @@ _Avoid_: Offline, degraded connection
 The lightweight MicroLink/Tailscale reconnect path used after a WiFi reconnect, which reopens sockets while preserving the existing VPN session and WireGuard keys, as opposed to the full `microlink_init()`/`microlink_start()` registration done only on first connect.
 _Avoid_: Reconnect, re-init
 
+**Published state**:
+Desired UI state written by whichever task learns it, with no lock, and read by the task that owns
+what it describes. The writer never touches the thing itself — it says what should be true and
+returns. Every status icon, the provisioning overlay's visibility, and the Tailscale handle are
+published this way.
+_Avoid_: Set, update, notify
+
+**Reconcile**:
+The owning task's periodic step that brings what is on screen into line with published state.
+Idempotent by construction and driven by comparison, not by a change flag, so a missed or torn
+round costs latency and never correctness.
+_Avoid_: Refresh, redraw, sync
+
+**Foreign task**:
+Any task that is not the owner of a piece of state. Every event callback in the firmware is foreign
+to the UI: the WiFi task, the NTP task, the BLE event loop, the button task and the shared timer
+task all learn things the screen should show, and none of them may block on the UI to say so.
+_Avoid_: Background task, caller, other thread
+
 **Retry backoff**:
 The single shared retry-pacing policy (`components/backoff/`) — 30 s, doubling, capped at 5 minutes, reset on success — that both the WiFi reconnect timer and the NTP re-sync loop arm from. A step is only consumed when a retry was actually armed, so a burst of failures can never inflate the delay while leaving nothing pending.
 _Avoid_: Retry timer, reconnect delay, exponential backoff (as if each caller had its own)

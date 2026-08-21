@@ -19,7 +19,6 @@ static lv_obj_t *s_sntp_icon = NULL;
 static lv_obj_t *s_ts_icon = NULL;
 static lv_timer_t *s_bat_timer = NULL;
 static lv_timer_t *s_bat_blink_timer = NULL;
-static lv_timer_t *s_reconcile_timer = NULL;
 static status_bar_battery_cb_t s_battery_cb = NULL;
 
 #define BATT_BLINK_PERIOD_MS 500
@@ -38,7 +37,7 @@ static sntp_status_t s_painted_sntp = SNTP_STATUS_IDLE;
 static ts_status_t s_painted_ts = TS_STATUS_IDLE;
 
 // Defined with the reconcile section below; declared here for battery_timer_cb()'s backstop call.
-static void reconcile_icons(bool force);
+// status_bar_reconcile() is declared in status_bar.h; ui.c's reconcile tick drives it.
 
 // ============================================================
 // Re-align the status bar chain (right-to-left)
@@ -160,9 +159,9 @@ static void battery_timer_cb(lv_timer_t *timer) // NOLINT(readability-non-const-
     s_battery_cb(view);
   }
 
-  // Backstop: if lv_timer_create() failed for the reconcile timer, this is the only thing left
-  // that can move the status icons. Costs three enum compares every 30s.
-  reconcile_icons(false);
+  // Backstop: if ui.c's reconcile tick failed to allocate, this is the only thing left that can
+  // move the status icons. Costs three enum compares every 30s.
+  status_bar_reconcile(false);
 
   // Re-align entire chain (text width may have changed)
   realign_chain();
@@ -171,21 +170,20 @@ static void battery_timer_cb(lv_timer_t *timer) // NOLINT(readability-non-const-
 // ============================================================
 // Published status -> reconcile
 //
-// Foreign tasks publish a desired status and never paint. reconcile_icons() is the only thing that
-// paints them, and it must only ever be called with the LVGL lock held — from an LVGL timer, which
-// holds it by construction, or from status_bar_create(), whose callers (main.c at boot, nav.c on
-// the button task) take it themselves. Task affinity is not what makes this safe; the lock is.
-// The payoff is that no foreign task takes that lock to move an icon, and no paint can be
-// silently skipped.
+// Foreign tasks publish a desired status and never paint. status_bar_reconcile() is the only
+// thing that paints them, and it must only ever be called with the LVGL lock held — from ui.c's
+// reconcile tick, which holds it by construction, or from status_bar_create(), whose callers
+// (main.c at boot, nav.c on the button task) take it themselves. Task affinity is not what makes
+// this safe; the lock is. The payoff is that no foreign task takes that lock to move an icon, and
+// no paint can be silently skipped.
 //
 // Reconciling is a comparison against what is on screen, deliberately, not a dirty flag. The two
 // cores give `volatile` no ordering guarantee, so a flag could become visible before the value it
 // refers to; the reconcile would then clear the flag, paint the stale value, and — CONNECTED and
 // NO_INTERNET being terminal states with no follow-up event — never repaint. Comparing instead
-// makes a torn read cost one 250 ms tick and nothing else: the next tick still sees a difference
-// and corrects it.
+// makes a torn read cost one reconcile tick and nothing else: the next tick still sees a
+// difference and corrects it.
 // ============================================================
-#define RECONCILE_PERIOD_MS 250
 
 static void paint_wifi_status(wifi_status_t status)
 {
@@ -311,7 +309,7 @@ static void paint_ts_status(ts_status_t status)
 //
 // Order matters — SNTP hides itself when idle or synced, and realign_chain() anchors the Tailscale
 // icon to whichever of SNTP/WiFi is visible.
-static void reconcile_icons(const bool force)
+void status_bar_reconcile(const bool force)
 {
   if (s_wifi_icon)
   {
@@ -344,18 +342,9 @@ static void reconcile_icons(const bool force)
   }
 }
 
-static void reconcile_timer_cb(lv_timer_t *timer) // NOLINT(readability-non-const-parameter)
-{
-  (void) timer;
-  reconcile_icons(false);
-}
-
 // ============================================================
 // Public API
 // ============================================================
-// clang-tidy scores this at 51 almost entirely from the two ESP_LOGE macro expansions; the
-// function itself is a flat sequence of widget creations with two timer null-checks.
-// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void status_bar_create(lv_obj_t *parent)
 {
   // --- Battery percentage (top-right corner) ---
@@ -405,21 +394,12 @@ void status_bar_create(lv_obj_t *parent)
   else
   {
     ESP_LOGE(tag, "Battery timer creation failed — battery indicator will not update, and the "
-                  "status icons lose their 30s reconcile backstop");
-  }
-
-  // --- LVGL timer: reconcile published status onto the icons ---
-  s_reconcile_timer = lv_timer_create(reconcile_timer_cb, RECONCILE_PERIOD_MS, NULL);
-  if (!s_reconcile_timer)
-  {
-    // Not fatal on its own: battery_timer_cb() still reconciles every 30s. Only if both timers
-    // failed to allocate do the icons freeze at whatever status_bar_create() painted.
-    ESP_LOGE(tag, "Reconcile timer creation failed — status icons fall back to a 30s refresh");
+                  "status icons lose their reconcile backstop");
   }
 
   // Reconcile immediately: this is also the restore-on-recreate path, which is why it paints
   // unconditionally rather than comparing against what the previous icons showed.
-  reconcile_icons(true);
+  status_bar_reconcile(true);
 }
 
 void status_bar_register_battery_cb(status_bar_battery_cb_t cb)
@@ -449,7 +429,6 @@ void status_bar_set_ts_status(ts_status_t status)
 void status_bar_destroy(void)
 {
   ui_timer_delete(&s_bat_timer);
-  ui_timer_delete(&s_reconcile_timer);
   ui_timer_delete(&s_bat_blink_timer);
   s_bat_icon = NULL;
   s_bat_pct = NULL;

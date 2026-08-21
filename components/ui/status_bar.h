@@ -106,6 +106,15 @@ extern "C"
   void status_bar_set_ts_status(ts_status_t status);
 
   /**
+   * @brief Repaint any status icon whose published value differs from what is on screen.
+   *
+   * Called from ui.c's reconcile tick. MUST be called with the LVGL port lock held. force=true
+   * paints unconditionally and is only for status_bar_create(), where the icons are brand-new
+   * objects and nothing can be inferred from what the previous ones showed.
+   */
+  void status_bar_reconcile(bool force);
+
+  /**
    * @brief Destroy the status bar and its battery timer.
    *
    * Must be called before deleting the parent screen to avoid
