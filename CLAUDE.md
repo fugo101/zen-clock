@@ -96,7 +96,7 @@ All event callbacks and nav wiring live here:
 | `on_wifi_event`                         | WiFi manager state machine transitions; calls `microlink_init/start` on first CONNECTED, `microlink_rebind` on reconnect |
 | `on_ble_prov_event`                     | BLE provisioning lifecycle events                                                                                        |
 | `on_sntp_sync`                          | NTP sync status updates                                                                                                  |
-| `on_battery_reading`                    | Registered via `status_bar_register_battery_cb()`; clamps brightness to `BATT_LOW_BRIGHTNESS` on the not-low→low edge (not level-triggered), restores it on recovery. Never fires on USB power, never writes NVS |
+| `on_battery_reading`                    | Registered via `status_bar_register_battery_cb()`; a `switch` over `battery_clamp_step()`, which owns the not-low→low edge rule. Clamps brightness to `BATT_LOW_BRIGHTNESS` on the edge (not level-triggered), restores it on recovery. Never fires on USB power, never writes NVS |
 | `app_handlers_register_nav_callbacks()` | Wires `do_reset_wifi`, `do_sleep_now`, `do_ntp_resync` and `do_provisioning` into nav system — called once at boot            |
 
 `on_wifi_event` starts BLE provisioning **only** on `NO_CRED`. `NO_MATCH`, `ALL_FAILED` and
@@ -114,6 +114,7 @@ mid-action now always lands instead of being silently dropped.
 | Component                      | Purpose                                                                                                                                                                                                                    |
 |--------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `components/backoff/`          | Shared retry-pacing policy (30 s → ×2 → 300 s, reset on success). Pure — no ESP-IDF headers — so it builds for the host-side `[env:native]` tests; symlinked into `test/test_pure_logic/`. Used by the WiFi reconnect timer (`src/app_handlers.c`) and the NTP re-sync loop |
+| `components/battery_view/`     | Pure mapping from one `bsp_battery_read()` reading to everything derived from it — icon symbol, tint, blink, label text, the low-battery flag, and the edge-detection step the brightness clamp arms from. No LVGL and no ESP-IDF headers, so it builds for the host-side `[env:native]` tests; symlinked into `test/test_pure_logic/`. Two adapters: `status_bar.c` paints it, `src/app_handlers.c` clamps off it |
 | `components/input_policy/`     | Pure decision behind `on_button_press()`: emergency IO14 hold, the two-button deep-sleep combo, the button→`nav_action_t` mapping, and the QR-overlay swallow/dismiss rule. Two pure stages: `input_policy_decide()` resolves the escape hatches, `input_policy_apply_overlay()` guards a NAV outcome. No ESP-IDF headers — symlinked into `test/test_pure_logic/` alongside its `nav.h` |
 | `components/bsp/`              | Board Support: display init, battery (GPIO4/ADC1_CH3), backlight (LEDC), buttons                                                                                                                                           |
 | `components/ui/`               | LVGL UI — modular widgets, see below                                                                                                                                                                                       |
@@ -137,7 +138,7 @@ widgets.
 | `ui.c`                 | Theme init + delegates to `nav_init()`; also exports `ui_apply_screen_bg()`                       |
 | `nav.c`                | **Navigation state machine** — owns all screen transitions (Clock ↔ Menu ↔ Settings) via a shared `show_screen()` helper |
 | `clock_face_text.c`    | HH:MM:SS (DS-Digital 48) + DD/MM/YYYY (DS-Digital 16), internal 1s LVGL timer                     |
-| `status_bar.c`         | Tailscale(⇄)/NTP(syncing-only)/WiFi/battery icons; 30s LVGL timer for battery, published via `bsp_battery_read()` (one ADC conversion for mV/%/USB together) and `status_bar_register_battery_cb()` |
+| `status_bar.c`         | Tailscale(⇄)/NTP(syncing-only)/WiFi/battery icons; 30s LVGL timer for battery, read via `bsp_battery_read()`, mapped by `battery_view()` and published as a `battery_view_t` through `status_bar_register_battery_cb()`. Nothing here decides what "low" means |
 | `prov_screen.c`        | QR code overlay shown during BLE provisioning                                                     |
 | `menu_screen.c`        | Menu list screen — row order is `menu_row_t` (`menu_screen.h`)                                    |
 | `settings_screen.c`    | Scrollable settings list with inline edit — 4 groups, 12 items (+ 4 section headers); row order is `settings_row_t` (`settings_screen.h`), the single source of truth |
@@ -403,6 +404,14 @@ evidence (e.g. `SNTP: Deep sleep wake…`) before assuming a crash.
 **Settings:** `lv_timer` one-shots delete themselves when their repeat count runs out. In the flush
 callback, null your timer handle *first* — otherwise the flush path calls `lv_timer_delete()` on it a
 second time.
+
+**Battery view:** `BATT_LOW_PCT`/`BATT_CRIT_PCT` are file-private in `battery_view.c`, not exported
+— once the predicate is a function, a public threshold is an invitation to re-derive `low` at a call
+site, which is how it came to be written twice. `battery_view_t` carries both `low` and
+`tint == BATTERY_TINT_LOW`; they are the same bit today and kept separate on purpose, because `tint`
+is an appearance decision and `low` is a power-policy input — collapsing them makes the brightness
+clamp read a colour. `battery_view()` clamps `pct` to 100 before formatting purely because the
+firmware builds with `-Werror=format-truncation` and GCC cannot otherwise bound it.
 
 **Input policy:** `input_policy.h` re-declares the BSP button/event enums rather than including
 `bsp.h`, which pulls in `esp_lvgl_port.h` and would keep the policy off the host test bench;

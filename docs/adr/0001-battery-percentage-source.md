@@ -65,3 +65,20 @@ the library's own ~10-sample filtered read plus a std-dev pass, plus one raw con
 USB-threshold check — roughly 11 ADC conversions per call instead of 1. This no longer compounds
 across two independent readers the way it briefly did before the System Info Battery row was
 deleted; only `status_bar.c`'s single 30s timer calls it now.
+
+**The single-reader contract now delivers a single derived view, not just a single reading.**
+Issue #79 found the low-battery predicate written character-for-character in two components:
+`status_bar.c` computed it to paint the icon red, then handed the raw `(pct, usb)` to its callback,
+where `app_handlers.c` recomputed the identical expression to clamp brightness. Nothing was
+inconsistent yet, but a change to what "low" means had to land twice, in two components, with two
+explanatory comments. `components/battery_view/` is now the one mapping from `(pct, usb)` to symbol,
+tint, blink, label text and the low flag, plus the edge-detection step the clamp arms from; the
+status bar and the brightness policy are both adapters over it. `status_bar_battery_cb_t` carries
+the `battery_view_t` rather than the raw pair specifically so a future third reader cannot introduce
+a fourth copy of the predicate. The contract this ADR established is unchanged — one ADC reader, one
+callback, last writer wins — and the thresholds moved out of `status_bar.h` into
+`battery_view.c` as file-private constants, since a public threshold is an invitation to re-derive
+the predicate at a call site. The `pct < 0` path is no longer a separate branch in the status bar:
+`"N/A"` + empty glyph + no tint + no blink falls out of the same mapping as every other reading, and
+is deliberately *not* low, so an ADC failure restores brightness rather than holding a clamp on a
+reading nothing can confirm.

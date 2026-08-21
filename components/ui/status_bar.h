@@ -5,6 +5,8 @@
 
 #include "lvgl.h"
 
+#include "battery_view.h"
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -50,32 +52,19 @@ extern "C"
   } sntp_status_t;
 
   /**
-   * @brief Battery percentage below which the UI shows low-battery state.
+   * @brief Called from the battery timer with the derived view of the latest reading.
    *
-   * Shared with app_handlers.c, which clamps brightness on this same threshold — a single
-   * constant so the icon color and the brightness policy can never disagree about what "low"
-   * means.
+   * Carries the view rather than the raw (pct, usb) pair so every reader consumes the same
+   * derivation — the thresholds and the "never low on USB" rule live in components/battery_view/
+   * and cannot be re-derived differently here. See ADR-0001.
    */
-#define BATT_LOW_PCT 15
-
-  /**
-   * @brief Battery percentage below which the icon blinks in addition to being red.
-   */
-#define BATT_CRIT_PCT 5
-
-  /**
-   * @brief Called from the battery timer with the latest reading.
-   *
-   * @param pct Battery percentage (0-100), or -1 if unavailable.
-   * @param usb True if USB power is present.
-   */
-  typedef void (*status_bar_battery_cb_t)(int pct, bool usb);
+  typedef void (*status_bar_battery_cb_t)(battery_view_t view);
 
   /**
    * @brief Register a callback for battery readings, piggybacking on the existing 30s timer.
    *
    * status_bar owns the only ADC poll in the UI; this exists so a caller that needs to react to
-   * battery level (e.g. clamping brightness) does not have to start a second one. Not a general
+   * the battery view (e.g. clamping brightness) does not have to start a second one. Not a general
    * pub/sub — one callback, last writer wins. NULL clears it.
    */
   void status_bar_register_battery_cb(status_bar_battery_cb_t cb);

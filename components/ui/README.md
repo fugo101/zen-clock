@@ -166,6 +166,7 @@ void status_bar_destroy(void);
 void status_bar_set_wifi_status(wifi_status_t status); // incl. NO_INTERNET and PROVISIONING
 void status_bar_set_sntp_status(sntp_status_t status); // SYNCING orange, FAILED red, otherwise hidden
 void status_bar_set_ts_status(ts_status_t status);     // Tailscale: idle/connecting/connected/error
+void status_bar_register_battery_cb(status_bar_battery_cb_t cb); // cb(battery_view_t) — one, last writer wins
 ```
 
 Icon chain (right-to-left): `[TS ⇄] [NTP ↻ — syncing or failed] [WiFi] [BatIcon] [BatPct]`
@@ -182,7 +183,10 @@ Icon chain (right-to-left): `[TS ⇄] [NTP ↻ — syncing or failed] [WiFi] [Ba
 
 `NO_INTERNET` clears when NTP next succeeds — reaching a time server proves the internet is back.
 
-Internal 30-second LVGL timer refreshes battery level automatically.
+Internal 30-second LVGL timer refreshes the battery view automatically. It is the only ADC poll in the
+UI; the reading is turned into a `battery_view_t` by `components/battery_view/` and both the painting
+here and the low-battery brightness clamp in `src/app_handlers.c` consume that same view. Nothing in
+this file decides what "low" means.
 
 ### `prov_screen.h` — BLE provisioning overlay
 
@@ -220,11 +224,14 @@ void device_info_screen_scroll_down(void);
 void device_info_screen_set_ml(microlink_t *ml); // pass s_ml after microlink_start(); NULL = disabled
 ```
 
-12 read-only rows (5 visible, UP/DOWN to scroll):
-`Chip`, `Firmware`, `MAC`, `Free Heap`, `Total Heap`, `Uptime`, `SSID`, `IP`, `Last NTP`, `TS Status`, `TS IP`,
-`Battery`
+11 read-only rows (5 visible, UP/DOWN to scroll):
+`Chip`, `Firmware`, `MAC`, `Free Heap`, `Total Heap`, `Uptime`, `SSID`, `IP`, `Last NTP`, `TS Status`, `TS IP`
 
-Refresh: static on create (Chip/Firmware/MAC/Total Heap) · 1s (Uptime) · 10s (Heap/SSID/IP/Last NTP/TS) · 30s (Battery)
+No Battery row: the status bar is mounted on every screen including this one, so it was showing the
+same fact twice — and, reading the ADC on its own offset timer, sometimes disagreeing. See
+`docs/adr/0001-battery-percentage-source.md`.
+
+Refresh: static on create (Chip/Firmware/MAC/Total Heap) · 1s (Uptime) · 10s (Heap/SSID/IP/Last NTP/TS)
 
 ### `settings_screen.h`
 
@@ -268,8 +275,8 @@ Settings edit mode (TOGGLE/RANGE items only)
 
 Action items (Sleep Now, NTP Resync, Reset WiFi, Provisioning): SELECT fires callback, no edit mode
 
-System Info screen (12 rows, 5 visible at a time)
-  Rows: Chip, Firmware, MAC, Free Heap, Total Heap, Uptime, SSID, IP, Last NTP, TS Status, TS IP, Battery
+System Info screen (11 rows, 5 visible at a time)
+  Rows: Chip, Firmware, MAC, Free Heap, Total Heap, Uptime, SSID, IP, Last NTP, TS Status, TS IP
   ├─ UP/DOWN: scroll
   └─ BACK:    → Menu screen
 ```

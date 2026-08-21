@@ -174,37 +174,34 @@ static void ts_poll_cb(void *arg)
 // or USB is plugged back in.
 #define BATT_LOW_BRIGHTNESS 30
 
-// Edge-triggered, not level-triggered. The reading arrives every 30s; clamping on every tick would
-// fight a user who deliberately raises brightness while low (it would be pushed back down within
-// half a minute), which is confusing since nothing they did caused it. Acting only on the
-// low/not-low transition means it steps in once and then leaves the display alone.
+// Edge detection lives in components/battery_view/ so the transition rule is host-testable; this
+// is just the caller's record of the previous reading. Starts false, so a device booting on an
+// already-low battery clamps on its first tick.
 static bool s_low_batt_active = false;
 
+// clang-tidy scores this at 56 purely from the ESP_LOG* macro expansions; the function itself is
+// a three-case switch.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-static void on_battery_reading(const int pct, const bool usb)
+static void on_battery_reading(const battery_view_t view)
 {
-  // USB power is never "low" — the alarm is about running out, not about charge level while
-  // plugged in — and BATT_LOW_PCT does not apply when pct is -1 (no reading).
-  const bool low = pct >= 0 && !usb && pct < BATT_LOW_PCT;
-  if (low == s_low_batt_active)
+  switch (battery_clamp_step(&s_low_batt_active, view))
   {
-    return;
-  }
-  s_low_batt_active = low;
-
-  if (low)
+  case BATTERY_CLAMP_ON:
   {
     const uint8_t current = bsp_display_get_brightness();
     if (current > BATT_LOW_BRIGHTNESS)
     {
-      ESP_LOGW(tag, "Battery low (%d%%) — clamping brightness to %d%%", pct, BATT_LOW_BRIGHTNESS);
+      ESP_LOGW(tag, "Battery low (%s) — clamping brightness to %d%%", view.text, BATT_LOW_BRIGHTNESS);
       bsp_display_set_brightness(BATT_LOW_BRIGHTNESS, 500);
     }
+    break;
   }
-  else
-  {
+  case BATTERY_CLAMP_OFF:
     ESP_LOGI(tag, "Battery recovered — restoring brightness");
     bsp_display_set_brightness(settings_get_brightness(), 500);
+    break;
+  case BATTERY_CLAMP_NONE:
+    break; // no default: let -Wswitch flag a new action instead of silently ignoring it
   }
 }
 

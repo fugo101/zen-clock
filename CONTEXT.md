@@ -24,8 +24,12 @@ _Avoid_: Standby, hibernate
 The persisted-through-reboot GPIO hold applied to the LCD power rail pin so it stays off across a deep-sleep cycle, released explicitly at the next boot.
 _Avoid_: GPIO lock, pin state
 
+**Battery view**:
+The complete derived state for one battery reading — icon symbol, tint, blink, label text, and the low flag — computed once by a single pure mapping and consumed by every reader, so the status bar's appearance and the low-battery clamp can never disagree about what a reading means.
+_Avoid_: Battery state, battery status, battery level
+
 **Low-battery clamp**:
-The edge-triggered brightness reduction applied the moment battery state crosses from not-low to low, restored on recovery, never persisted to NVS and never applied on USB power.
+The edge-triggered brightness reduction applied the moment the battery view crosses from not-low to low, restored on recovery, never persisted to NVS and never applied on USB power.
 _Avoid_: Low-power mode, brightness limit
 
 **WiFi manager**:
