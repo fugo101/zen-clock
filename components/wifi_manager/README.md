@@ -157,11 +157,11 @@ esp_err_t wifi_manager_clear_credential(void);
 ```c
 /**
  * @brief Set callback function for WiFi Manager events.
- * Callback fires from background task when state changes.
- * Callbacks that touch LVGL from this context should use a *bounded* lock (see CLAUDE.md's
- * Critical Rules — an unbounded lvgl_port_lock(0) here can stall the wifi task past
- * wifi_manager_stop()'s STOP_TIMEOUT_MS), not the plain lvgl_port_lock(0)/unlock() pattern used
- * elsewhere.
+ * Callback fires synchronously on the wifi task when state changes.
+ * The callback must not block: anything it does inline is time wifi_manager_stop() cannot
+ * interrupt. It must not take the LVGL lock at all — publish the state and let the UI's
+ * reconcile tick paint it (see docs/adr/0007-published-ui-state.md) — and long work belongs on
+ * a worker task (see net_worker in app_handlers.c).
  * @param callback Function pointer, or NULL to disable
  */
 void wifi_manager_set_callback(wifi_event_cb_t callback);
@@ -203,19 +203,26 @@ WiFi Manager fires events via the callback when state changes:
       disconnected and schedule a reconnect timer — device operates offline, retries with exponential backoff
       (30 s → 60 s → … → 300 s max). **Do not start BLE provisioning** for these events.
 
-3. **Lock UI updates in callback, with a bounded wait:** this callback runs synchronously on the
-   wifi task, so an unbounded `lvgl_port_lock(0)` here can stall the wifi task past
-   `wifi_manager_stop()`'s `STOP_TIMEOUT_MS`. Use a short bounded wait, skip the paint on failure,
-   and never call `lvgl_port_unlock()` on the failure path (a timed-out lock doesn't hold the
-   mutex). See `wifi_event_lvgl_lock()` in `app_handlers.c` for the pattern:
+3. **Never block in the callback — publish, then return.** It runs synchronously on the wifi task,
+   so everything it does inline is time `wifi_manager_stop()` cannot interrupt: `get_state()` still
+   reads the old state and `s_task_parked` stays false, so a concurrent stop burns its whole
+   `STOP_TIMEOUT_MS` and returns `ESP_ERR_TIMEOUT`. That applies to the LVGL lock **and** to slow
+   work. Take no LVGL lock here (not even a bounded one) and post anything unbounded to a worker:
    ```c
    static void on_wifi_event(wifi_manager_event_t event) {
-       if (wifi_event_lvgl_lock()) { // bounded wait, e.g. 50ms
-           // ... update UI widgets ...
-           lvgl_port_unlock();
+       switch (event) {
+       case WIFI_MGR_CONNECTED:
+           set_link(WIFI_STATUS_CONNECTED, true); // publish; the UI reconcile tick paints it
+           net_worker_notify();                   // NTP + Tailscale run off this task
+           break;
+       // ...
        }
    }
    ```
+   An earlier version of this file prescribed a *bounded* 50 ms LVGL lock here, on the grounds that
+   a skipped paint would be repainted by the next event. That was wrong for the terminal states —
+   after `WIFI_MGR_CONNECTED` there is no next event — and it left the status icon stale for the
+   life of the connection. See `docs/adr/0007-published-ui-state.md` and ADR-0002.
 
 4. **Never call `esp_wifi_*` directly** — use this API only
 
