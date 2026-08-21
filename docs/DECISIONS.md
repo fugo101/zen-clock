@@ -27,7 +27,7 @@ Everything else in this file is decided or done. These are not.
 | Low-battery icon (red < 15%, blink < 5%) never observed | The brightness clamp half **was** confirmed on device (screen dims, the Settings value correctly stays put — it's a live clamp, never written to NVS). The colour/blink half needs a real pack drained below 15%. |
 | BLE teardown never checked by heap measurement | `network_prov_mgr_deinit()` in the `NETWORK_PROV_END` handler rests on code review plus the upstream example. If a heap trend across repeated provisioning cycles becomes measurable, re-check it. |
 | `do_dns_probe()` proves DNS resolves, not that anything is reachable | See the WiFi section — found 2026-08-13, not in the original audit. |
-| Battery % jitter fix (issue #44) never verified on hardware | Code-complete: `adc_battery_estimation` replaces the hand-rolled curve. Needs ~10 min of `bsp_battery` log output watched live, plus a USB plug/unplug cycle, to confirm the jitter is actually gone. See the Battery section. |
+| Battery % jitter fix (issue #44) — long-idle jitter not yet confirmed | Partially verified on hardware 2026-08-21: boot log clean, USB detection flips immediately, System Info/status-bar disagreement bug found and fixed (see the Battery section). Still needs ~10 min of steady-state log output on battery power, undisturbed, to confirm the original ±3–7% jitter is actually gone. |
 
 ---
 
@@ -236,17 +236,23 @@ lag, no stuck values.
 divider, not the battery — the value is structurally above every point in both prebuilt OCV-SOC
 curves, so it clamps to the highest curve point regardless of which curve or charging-detection
 method is used; swapping the estimation library does not by itself stop this. `status_bar.c` blanks
-the `%` label (charge icon alone carries the meaning); `device_info_screen.c` shows "Charging" with
-no number.
+the `%` label; the charge icon alone carries the meaning.
 
-**`bsp_battery_read()` is no longer O(1) — accepted, not yet optimized.** `*pct` costs
+**`device_info_screen.c` has no Battery row — deleted, not just hidden.** It used to show its own
+`%`/"Charging"/"N/A", read independently from `status_bar.c` on a second, offset 30s timer, from
+the same shared `adc_battery_estimation` handle. Confirmed on hardware (2026-08-21): right after a
+USB reconnect, the two independent reads caught the library's LPF converging toward its new target
+at different moments, so the status bar and System Info visibly disagreed for a while before both
+settled — a real symptom of the O(1) loss below, not a separate bug. Fix was to stop reading it a
+second time at all: the status bar is already visible on every screen (`show_screen()` in `nav.c`
+mounts it unconditionally), so the row was pure duplication. This also closes issue #61 — only one
+30s timer touches the battery now.
+
+**`bsp_battery_read()` is no longer O(1) — accepted.** `*pct` costs
 `adc_battery_estimation_get_capacity()`'s own ~10-sample filtered read plus a std-dev pass, plus 1
-raw conversion for the USB-threshold check: ~11 ADC conversions per call instead of 1. It's called
-from two independent 30s LVGL timers (`status_bar.c` and `device_info_screen.c`), each triggering
-its own full read with no sharing between them, despite `status_bar.c` already exposing
-`status_bar_register_battery_cb()` as a fan-out point `on_battery_reading()` (`app_handlers.c`)
-already consumes. Not fixed here — tracked as issue #61. Worth doing if a consumer ever needs a
-tighter period than 30s.
+raw conversion for the USB-threshold check: ~11 ADC conversions per call instead of 1. Only
+`status_bar.c` calls it now (one 30s timer), so this no longer compounds across two independent
+readers the way it did before the Battery-row removal above.
 
 ---
 

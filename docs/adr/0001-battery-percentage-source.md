@@ -2,7 +2,7 @@
 
 Issue #44 replaced `bsp_battery.c`'s hand-rolled sigmoid curve — which amplified single-sample ADC
 noise into ±3–7% status-bar jitter — with `espressif/adc_battery_estimation` (Analog Devices
-OCV-SOC model, 21 points). Three decisions came out of that swap that aren't obvious from the code:
+OCV-SOC model, 21 points). Four decisions came out of that swap that aren't obvious from the code:
 
 **Raw millivolts is not part of the public API.** `bsp_battery_read()` briefly returned `*mv`
 alongside `*pct`, but the library's internal 10-sample-averaged read (the actual jitter fix) owns
@@ -30,6 +30,16 @@ USB", reused rather than duplicated.
 **On USB, the percentage is hidden rather than shown or frozen.** The ADC reads the USB rail on
 that pin, not the battery — the value is structurally above every point in both of the library's
 curves, so it clamps to the top regardless of curve or charging-detection choice. Swapping the
-library does not fix this by itself. Hiding it (status bar: blank; System Info: "Charging", no
-number) was chosen over freezing the last known pre-USB value, since it needs no extra state and
-the charge icon already carries the meaning.
+library does not fix this by itself. Hiding it in the status bar (blank label, charge icon carries
+the meaning) was chosen over freezing the last known pre-USB value, since it needs no extra state.
+
+**System Info's Battery row was deleted, not fixed to agree with the status bar.** It read battery
+state independently, on its own offset 30s timer, from the same shared, slow-converging
+`adc_battery_estimation` handle. Confirmed on hardware (2026-08-21): reconnecting USB after a
+battery-only stretch, the status bar and System Info briefly showed *different* percentages before
+both settled — each had caught the library's LPF mid-convergence at a different moment. The two
+displays could be synchronized (issue #61 already proposed routing System Info through
+`status_bar_register_battery_cb()` instead of its own timer), but the status bar is already visible
+on every screen including System Info (`show_screen()` in `nav.c` mounts it unconditionally) — so
+the row was showing the same fact twice, just sometimes-inconsistently. Deleting it removes the
+disagreement instead of synchronizing it, and incidentally closes #61 too (only one reader left).
