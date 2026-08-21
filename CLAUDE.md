@@ -138,7 +138,7 @@ widgets.
 | `ui.c`                 | Theme init + delegates to `nav_init()`; also exports `ui_apply_screen_bg()`                       |
 | `nav.c`                | **Navigation state machine** — owns all screen transitions (Clock ↔ Menu ↔ Settings) via a shared `show_screen()` helper |
 | `clock_face_text.c`    | HH:MM:SS (DS-Digital 48) + DD/MM/YYYY (DS-Digital 16), internal 1s LVGL timer                     |
-| `status_bar.c`         | Tailscale(⇄)/NTP(syncing-only)/WiFi/battery icons; 30s LVGL timer for battery, read via `bsp_battery_read()`, mapped by `battery_view()` and published as a `battery_view_t` through `status_bar_register_battery_cb()`. Nothing here decides what "low" means |
+| `status_bar.c`         | Tailscale(⇄)/NTP(syncing-only)/WiFi/battery icons. The three status icons are published by foreign tasks and painted by a 250 ms reconcile timer — no caller takes the LVGL lock. 30s LVGL timer for battery, read via `bsp_battery_read()`, mapped by `battery_view()` and published as a `battery_view_t` through `status_bar_register_battery_cb()`. Nothing here decides what "low" means |
 | `prov_screen.c`        | QR code overlay shown during BLE provisioning                                                     |
 | `menu_screen.c`        | Menu list screen — row order is `menu_row_t` (`menu_screen.h`)                                    |
 | `settings_screen.c`    | Scrollable settings list with inline edit — 4 groups, 12 items (+ 4 section headers); row order is `settings_row_t` (`settings_screen.h`), the single source of truth |
@@ -236,22 +236,26 @@ lvgl_port_unlock();
 (`main.c`) and for LVGL-timer contexts, but **not** for a callback that runs on the wifi task or the
 shared `esp_timer` task: `on_wifi_event()` runs synchronously from inside `fire_event()` on the wifi
 task, so an unbounded lock there could stall it invisibly to `wifi_manager_stop()`'s
-`STOP_TIMEOUT_MS`. Those callbacks use a **bounded** 50 ms lock instead
-(`wifi_event_lvgl_lock()` in `app_handlers.c`, and the identical pattern in `ts_poll_cb()` for the
-Tailscale poll timer), skip the paint on failure, and — critically — **never call
-`lvgl_port_unlock()` on the failure path**: a timed-out `lvgl_port_lock()` does not hold the mutex,
-so unlocking anyway is a real bug, not a no-op.
+`STOP_TIMEOUT_MS`. Such a callback uses a **bounded** 50 ms lock instead
+(`wifi_event_lvgl_lock()` in `app_handlers.c`), skips the paint on failure, and — critically —
+**never calls `lvgl_port_unlock()` on the failure path**: a timed-out `lvgl_port_lock()` does not
+hold the mutex, so unlocking anyway is a real bug, not a no-op.
 
 A bounded lock is only legitimate where **a later event repeats the paint**. The WiFi status icon
 was not such a place — a timeout on entering a terminal state (`CONNECTED`, `NO_INTERNET`) left the
-icon stale for the life of the connection, because there is no next event. It is **published**
-instead: `status_bar_set_wifi_status()` writes a value and returns, taking no lock from any task,
-and `status_bar.c`'s 250 ms reconcile timer paints it on the LVGL task, comparing against what is
-on screen (not a dirty flag — the two cores give `volatile` no ordering guarantee, so a torn read
-must cost one tick, not a permanent mispaint). `status_bar_create()` replays the published value,
-so a screen change cannot resurrect a stale one. Prefer publishing over locking for anything a
-foreign task wants on screen; the bounded lock survives only for
-`device_info_screen_set_ml()`, where the System Info screen's own 10s timer genuinely repeats it.
+icon stale for the life of the connection, because there is no next event.
+
+All three status icons are **published** instead. `status_bar_set_wifi_status()`,
+`status_bar_set_sntp_status()` and `status_bar_set_ts_status()` write a value and return, taking no
+lock from any task; `status_bar.c`'s 250 ms reconcile timer paints them on the LVGL task, comparing
+against what is on screen (not a dirty flag — the two cores give `volatile` no ordering guarantee,
+so a torn read must cost one tick, not a permanent mispaint). `status_bar_create()` replays the
+published values, so a screen change cannot resurrect a stale one, and `battery_timer_cb` backstops
+the reconcile at 30 s should its timer fail to allocate.
+
+Prefer publishing over locking for anything a foreign task wants on screen. `wifi_event_lvgl_lock()`
+survives only for `device_info_screen_set_ml()`, where the System Info screen's own 10s timer
+genuinely repeats the update.
 
 **Never hardcode colors** (e.g., `lv_color_white()`). The UI supports Light and Dark themes — use theme-aware color
 access.
@@ -370,7 +374,7 @@ After any dependency-manager or ESP-IDF upgrade touching this path, diff
 
 - Status bar: `LV_SYMBOL_SHUFFLE` (⇄) icon left of SNTP — dim=idle, orange=connecting, green=connected, red=error
 - System Info rows: `TS Status` (state string) + `TS IP` (VPN IP when connected, else N/A)
-- A 10s `esp_timer` in `app_handlers.c` polls `microlink_get_state()` and calls `status_bar_set_ts_status()`
+- A 10s `esp_timer` in `app_handlers.c` polls `microlink_get_state()` and publishes via `status_bar_set_ts_status()` — no LVGL lock, so it cannot stall the shared `esp_timer` task
 - `device_info_screen_set_ml(s_ml)` called after `microlink_start()` and `microlink_rebind()`
 
 **Status bar icon visibility:**
