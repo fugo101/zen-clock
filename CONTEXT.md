@@ -1,0 +1,57 @@
+# ZenClock
+
+Firmware for a WiFi-connected desk clock (LilyGo T-Display-S3) that stays usable offline, provisions over BLE, and optionally tunnels home over Tailscale.
+
+## Language
+
+**Nav action**:
+One of the four abstract inputs (`UP`, `DOWN`, `SELECT`, `BACK`) the navigation state machine consumes, decoupled from which physical button produced it.
+_Avoid_: Button press, key event
+
+**Screen**:
+One full-screen LVGL view the navigation state machine can show — Clock, Menu, Settings, System Info, or the provisioning QR overlay.
+_Avoid_: Page, view, activity
+
+**Edit mode**:
+The in-place state a Settings row enters on `SELECT`, where `UP`/`DOWN` change the row's value instead of moving the cursor, auto-saving to NVS as they go.
+_Avoid_: Edit screen, focus mode
+
+**Deep sleep**:
+The device's low-power state, entered by inactivity timeout or the two-button combo, that cuts the LCD power rail and wakes only on a wake-pin interrupt.
+_Avoid_: Standby, hibernate
+
+**Wake-pin hold latch**:
+The persisted-through-reboot GPIO hold applied to the LCD power rail pin so it stays off across a deep-sleep cycle, released explicitly at the next boot.
+_Avoid_: GPIO lock, pin state
+
+**Low-battery clamp**:
+The edge-triggered brightness reduction applied the moment battery state crosses from not-low to low, restored on recovery, never persisted to NVS and never applied on USB power.
+_Avoid_: Low-power mode, brightness limit
+
+**WiFi manager**:
+The state machine (`IDLE → SCANNING → CONNECTING → VERIFYING → CONNECTED`) that owns the device's single stored WiFi credential and all connection attempts.
+_Avoid_: Network manager, connection handler
+
+**Provisioning**:
+The BLE-based flow (via `network_provisioning` / Espressif's BLE Prov app) that lets a phone hand the device a WiFi credential over Security 2 (SRP6a), shown to the user as a QR overlay.
+_Avoid_: Setup, pairing, onboarding
+
+**No-credential state**:
+The specific WiFi manager outcome (`WIFI_MGR_NO_CRED`) that is the only trigger for starting provisioning — every other failure mode instead schedules a backoff reconnect, because losing coverage must never look like an unprovisioned device.
+_Avoid_: Connection failure, disconnected
+
+**Connected-but-no-internet**:
+The WiFi manager state where the device has a real association and IP lease but a DNS probe failed — treated as usable (the device is still a LAN-connected clock), painted as a distinct status-bar color, and cleared only by a successful NTP sync.
+_Avoid_: Offline, degraded connection
+
+**VPN rebind**:
+The lightweight MicroLink/Tailscale reconnect path used after a WiFi reconnect, which reopens sockets while preserving the existing VPN session and WireGuard keys, as opposed to the full `microlink_init()`/`microlink_start()` registration done only on first connect.
+_Avoid_: Reconnect, re-init
+
+**Status bar**:
+The persistent LVGL bar shown on every screen carrying the Tailscale, NTP, WiFi, and battery indicators — the single place battery/connection state is displayed, so no other screen duplicates it.
+_Avoid_: Header, top bar
+
+## Avoid globally
+
+- **Traps** — DECISIONS.md's old term for "a decision that looks wrong until you know why." Superseded by ADRs in `docs/adr/`; don't reintroduce the word as a section heading.

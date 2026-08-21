@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Host-side unit tests for the pure logic that doesn't need the ESP-IDF toolchain — see
-// docs/DECISIONS.md ("Build, CI & tooling"). Runs via `pio test -e native`.
+// CLAUDE.md's "Non-Architectural Notes" (Build tooling: [env:native]/test_build_src). Runs via
+// `pio test -e native`.
 
 #include <unity.h>
 #include "ui_utils.h"
