@@ -43,3 +43,25 @@ displays could be synchronized (issue #61 already proposed routing System Info t
 on every screen including System Info (`show_screen()` in `nav.c` mounts it unconditionally) — so
 the row was showing the same fact twice, just sometimes-inconsistently. Deleting it removes the
 disagreement instead of synchronizing it, and incidentally closes #61 too (only one reader left).
+
+**None of the ADC init path is `ESP_ERROR_CHECK`'d.** `adc_cali_create_scheme_curve_fitting()`
+returns `ESP_ERR_NOT_SUPPORTED` on a chip whose eFuse carries no calibration data — a property of
+that individual part, not a bug — and failing boot over a cosmetic battery percentage would be a
+worse outcome than degrading gracefully. Every call in the init path, including
+`adc_battery_estimation_create()`, follows the same rule: on failure the handle stays NULL, readings
+report `-1`, and the UI already renders that as "N/A".
+
+**The `adc_battery_estimation` library can't own the ADC unit — `bsp_battery.c` still does.** The
+library has no voltage-only getter and no other way to detect USB power on this board (there is no
+dedicated charge-detect pin), so `bsp_battery_read()` must keep reading the channel itself for the
+USB-threshold check, and ESP-IDF won't let two independent `adc_oneshot_unit_handle_t`s own the same
+physical unit anyway. The library is handed the already-initialized handles via
+`.external.adc_handle`/`.adc_cali_handle` rather than its own `.internal.*` auto-creation path — the
+wrapper around it could be thinned by the library swap, but not eliminated, regardless of whether raw
+millivolts are exposed publicly.
+
+**`bsp_battery_read()` is no longer O(1) — an accepted cost of the library swap.** `*pct` now costs
+the library's own ~10-sample filtered read plus a std-dev pass, plus one raw conversion for the
+USB-threshold check — roughly 11 ADC conversions per call instead of 1. This no longer compounds
+across two independent readers the way it briefly did before the System Info Battery row was
+deleted; only `status_bar.c`'s single 30s timer calls it now.

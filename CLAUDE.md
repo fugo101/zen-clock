@@ -369,6 +369,55 @@ which is proof the internet works. There is deliberately **no periodic DNS re-pr
 `do_dns_probe()` contains an unbounded `getaddrinfo()`, and `wifi_manager_stop()` has to be able to interrupt that
 state within `STOP_TIMEOUT_MS`.
 
+## Non-Architectural Notes
+
+Smaller gotchas that don't rise to an ADR (not hard-to-reverse architectural decisions) but are easy
+to "fix" back into a bug if you don't know why they're there. Architectural decisions live in
+`docs/adr/` instead — see Domain docs below.
+
+**WiFi manager:** `BIT_STOP` is checked before `BIT_DISCONNECTED` in both VERIFYING and CONNECTED —
+`wifi_manager_stop()` raises both bits, and testing DISCONNECTED first would report a spurious
+failure and schedule a reconnect against the app's own deliberate stop. `s_task_parked` distinguishes
+"genuinely blocked on the task notify" from IDLE-in-passing (the state the task also transits through
+between `ulTaskNotifyTake()` and `set_state()`); don't reintroduce an early return there. Failure
+events are suppressed while `stop_requested()`, otherwise a deliberate stop can arm a reconnect that
+fires later during BLE provisioning and takes the radio back. A 32-char SSID with no NUL terminator
+is correct — `wifi_cfg.sta.ssid` is `uint8_t[32]`, the 802.11 maximum, and the driver reads it bounded.
+
+**BLE provisioning:** `ble_provisioning_is_active()` returns `s_active && !s_stopping` — false the
+moment a stop is requested — so re-entering during the ~1.2s teardown window takes the "just re-show
+the QR" branch against a manager that is already tearing itself down, instead of racing a restart.
+
+**Deep sleep:** "Sleeps then wakes instantly" looks exactly like a panic from the serial log. Don't
+trust the word "panic" here — check for actual `Guru Meditation`/`Backtrace` text and for wake
+evidence (e.g. `SNTP: Deep sleep wake…`) before assuming a crash.
+
+**Settings:** `lv_timer` one-shots delete themselves when their repeat count runs out. In the flush
+callback, null your timer handle *first* — otherwise the flush path calls `lv_timer_delete()` on it a
+second time.
+
+**Buttons:** the ISR passes `NULL` for `pxHigherPriorityTaskWoken`. This is legal (FreeRTOS guards
+it) and unobservable here since the very next thing the task does is a 50ms debounce delay.
+
+**Build tooling:** `board_build.esp-idf.sdkconfig_path` *replaces* the sdkconfig (`-DSDKCONFIG=`); it
+does not layer a fragment on top of it, and `sdkconfig_extra` does not exist — PlatformIO silently
+ignores it if set. `[env:native]` deliberately does not set `test_build_src`; it compiles only the
+symlinked pure sources and must never pull in ESP-IDF code. `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`
+stays on with no OTA code in the tree yet — `partitions.csv` already pre-wires the dual-slot layout
+and OTA is a stated future goal, so disabling now to re-enable later would cost more than leaving it.
+`is_cmake_reconfigure_required()` in the espidf builder only watches the root and `src/`
+`CMakeLists.txt`, not `components/*/CMakeLists.txt` — adding a source file to a component's
+`CMakeLists.txt` can silently not get compiled until something else dirties the build dir (CI already
+deletes `.pio/build` every run, so this only bites a dev machine with a persistent build dir). macOS
+has no `timeout` command, and `pio device monitor` crashes when redirected straight to a file; the
+board's native USB-CDC means every reset re-enumerates the port, so a plain `cat` capture dies
+silently rather than erroring — use a self-healing reattach loop and verify data is still arriving
+before trusting a quiet log.
+
+**Repo accounts:** `fugo101` and `fudio101` are two different GitHub accounts, and neither is a
+typo. `fugo101` owns this repo and `fugo101/microlink`; `fudio101` only appears in the `LICENSE`
+copyright line, a personal attribution unrelated to which account owns which repo.
+
 ## Agent skills
 
 ### Issue tracker

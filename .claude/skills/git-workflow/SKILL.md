@@ -205,10 +205,14 @@ fix(wifi): reconnect after ASSOC_LEAVE without a 15s timeout
 feat(settings): add timezone offset range item
 ```
 
-When a change encodes a non-obvious tradeoff — a decision that looks wrong until you know why, or a
-trap already paid for once — record it in `docs/DECISIONS.md` under that file's own two rules:
-delete the entry if the decision is later reversed, and record what was actually verified (code
-review vs. measured on device), not what's believed.
+When a change encodes a non-obvious tradeoff — one that's hard to reverse, would surprise a future
+reader without context, and was a real choice among genuine alternatives — record it as an ADR in
+`docs/adr/` following the `mattpocock-skills` domain-modeling convention (sequentially numbered
+`NNNN-slug.md`, minimal template: title + a few sentences of context/decision/why). Superseded
+decisions get a `Status: superseded by ADR-NNNN` frontmatter line rather than being deleted — ADRs
+are a record of what was decided and why, not a live "current state" doc. Smaller gotchas that don't
+clear that bar belong in the nearest relevant code comment or in CLAUDE.md's Non-Architectural Notes
+section instead.
 
 ## Real Examples from This Project
 
