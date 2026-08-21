@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.2](https://github.com/fugo101/zen-clock/compare/v0.4.1...v0.4.2) (2026-08-21)
+
+
+### Bug Fixes
+
+* **bsp:** replace hand-rolled battery curve with adc_battery_estimation ([#60](https://github.com/fugo101/zen-clock/issues/60)) ([943c774](https://github.com/fugo101/zen-clock/commit/943c774f8c8177dd1b404a8ddac5154570a0e643))
+
+
+### Documentation
+
+* replace DECISIONS.md with ADRs and CONTEXT.md glossary ([#76](https://github.com/fugo101/zen-clock/issues/76)) ([d0ab8bf](https://github.com/fugo101/zen-clock/commit/d0ab8bf616afd63385d84265b4c229e108db4c41))
+
 ## [0.4.1](https://github.com/fugo101/zen-clock/compare/v0.4.0...v0.4.1) (2026-08-20)
 
 
