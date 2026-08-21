@@ -38,13 +38,10 @@ static esp_timer_handle_t s_ts_poll_timer = NULL;
 
 static uint32_t s_reconnect_backoff_s = BACKOFF_START_S;
 
-// How long ts_poll_cb waits for the LVGL lock before giving up on this tick.
-#define TS_POLL_LOCK_TIMEOUT_MS 50
-#define TS_POLL_PERIOD_US       (10ULL * 1000000ULL)
+#define TS_POLL_PERIOD_US (10ULL * 1000000ULL)
 
-// How long on_wifi_event() waits for the LVGL lock before skipping a paint. Same 50ms value as
-// TS_POLL_LOCK_TIMEOUT_MS, kept as its own constant since the two calls have different reasons
-// for existing (see wifi_event_lvgl_lock() below).
+// How long on_wifi_event() waits for the LVGL lock before skipping a paint.
+// See wifi_event_lvgl_lock() below for what is still allowed to use it.
 #define WIFI_EVENT_LOCK_TIMEOUT_MS 50
 static bool s_sntp_started = false;
 
@@ -152,17 +149,10 @@ static void ts_poll_cb(void *arg)
     ts = TS_STATUS_CONNECTING;
     break;
   }
-  // Bounded wait. lvgl_port_lock(0) means portMAX_DELAY, not try-lock, and this callback
-  // runs on the shared esp_timer task — blocking here would also stall inactivity_cb
-  // (deep sleep) and reconnect_timer_cb (WiFi retry). Status is re-polled in 10s, so
-  // dropping a tick costs nothing. On failure the mutex is NOT held: do not unlock.
-  if (!lvgl_port_lock(TS_POLL_LOCK_TIMEOUT_MS))
-  {
-    ESP_LOGD(tag, "LVGL busy — skipping Tailscale status tick");
-    return;
-  }
+  // No lock: this only publishes. It matters here more than most — the callback runs on the
+  // shared esp_timer task, so blocking would also stall inactivity_cb (deep sleep) and
+  // reconnect_timer_cb (WiFi retry).
   status_bar_set_ts_status(ts);
-  lvgl_port_unlock();
 }
 
 // ============================================================
@@ -491,14 +481,11 @@ void on_sntp_sync(const sntp_sync_event_t event)
   {
   case SNTP_EVENT_SYNCING:
     ESP_LOGI(tag, "NTP syncing...");
-    lvgl_port_lock(0);
     status_bar_set_sntp_status(SNTP_STATUS_SYNCING);
-    lvgl_port_unlock();
     break;
 
   case SNTP_EVENT_SYNCED:
     ESP_LOGI(tag, "NTP time synchronized!");
-    lvgl_port_lock(0);
     status_bar_set_sntp_status(SNTP_STATUS_SYNCED);
     // Reaching an NTP server proves the internet works, so this doubles as the recovery signal
     // for a connection that failed its DNS probe earlier — the captive portal has been signed
@@ -511,14 +498,11 @@ void on_sntp_sync(const sntp_sync_event_t event)
       s_wifi_unverified = false;
       status_bar_set_wifi_status(WIFI_STATUS_CONNECTED);
     }
-    lvgl_port_unlock();
     break;
 
   case SNTP_EVENT_FAILED:
     ESP_LOGW(tag, "NTP sync failed — clock may show wrong time");
-    lvgl_port_lock(0);
     status_bar_set_sntp_status(SNTP_STATUS_FAILED);
-    lvgl_port_unlock();
     break;
   }
 }
@@ -616,8 +600,8 @@ static bool microlink_configured(void)
   return auth_key[0] != '\0' || microlink_has_stored_credentials();
 }
 
-// Bounded wait — see ts_poll_cb() above for the same reasoning: on_wifi_event() runs
-// synchronously on the wifi task from inside fire_event(), including calls made deep inside
+// Bounded wait: on_wifi_event() runs synchronously on the wifi task from inside fire_event(),
+// including calls made deep inside
 // try_connect_candidate(); an unbounded lvgl_port_lock(0) there could stall the wifi task for as
 // long as the LVGL task is busy, invisible to wifi_manager_stop()'s STOP_TIMEOUT_MS polling.
 //

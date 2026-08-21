@@ -24,20 +24,20 @@ static status_bar_battery_cb_t s_battery_cb = NULL;
 
 #define BATT_BLINK_PERIOD_MS 500
 
-// Published WiFi status: written by whatever task learns it (wifi task, SNTP task, the BLE event
-// loop), painted only on the LVGL task by the reconcile section below. Persisting it across screen
-// switches is what lets the icon restore on recreate.
+// Published status: written by whatever task learns it (the wifi task, the SNTP task, the BLE
+// event loop, the Tailscale poll timer), painted only on the LVGL task by the reconcile section
+// below. Persisting it across screen switches is what lets the icons restore on recreate.
 static volatile wifi_status_t s_pub_wifi = WIFI_STATUS_DISCONNECTED;
+static volatile sntp_status_t s_pub_sntp = SNTP_STATUS_IDLE;
+static volatile ts_status_t s_pub_ts = TS_STATUS_IDLE;
 
-// What the icon currently shows. LVGL task only — never written by a publisher.
+// What each icon currently shows. LVGL task only — never written by a publisher.
 static wifi_status_t s_painted_wifi = WIFI_STATUS_DISCONNECTED;
+static sntp_status_t s_painted_sntp = SNTP_STATUS_IDLE;
+static ts_status_t s_painted_ts = TS_STATUS_IDLE;
 
 // Defined with the reconcile section below; declared here for battery_timer_cb()'s backstop call.
-static void reconcile_wifi(void);
-
-// Persist status across screen switches so icons restore correctly on recreate
-static sntp_status_t s_last_sntp_status = SNTP_STATUS_IDLE;
-static ts_status_t s_last_ts_status = TS_STATUS_IDLE;
+static void reconcile_icons(bool force);
 
 // ============================================================
 // Re-align the status bar chain (right-to-left)
@@ -160,19 +160,19 @@ static void battery_timer_cb(lv_timer_t *timer) // NOLINT(readability-non-const-
   }
 
   // Backstop: if lv_timer_create() failed for the reconcile timer, this is the only thing left
-  // that can move the WiFi icon. Costs one enum compare every 30s.
-  reconcile_wifi();
+  // that can move the status icons. Costs three enum compares every 30s.
+  reconcile_icons(false);
 
   // Re-align entire chain (text width may have changed)
   realign_chain();
 }
 
 // ============================================================
-// Published WiFi status -> reconcile
+// Published status -> reconcile
 //
 // Foreign tasks publish a desired status and never paint. This timer and status_bar_create() are
 // the only things that reconcile it onto the icon, and both run on the LVGL task — so no foreign
-// task ever takes the LVGL lock to move this icon, and no paint can be silently skipped.
+// task ever takes the LVGL lock to move these icons, and no paint can be silently skipped.
 //
 // Reconciling is a comparison against what is on screen, deliberately, not a dirty flag. The two
 // cores give `volatile` no ordering guarantee, so a flag could become visible before the value it
@@ -237,32 +237,113 @@ static void paint_wifi_status(wifi_status_t status)
   realign_chain();
 }
 
-// Paints unconditionally. Used by status_bar_create(), where the icon is a brand-new object and
-// nothing can be inferred from s_painted_wifi.
-static void reconcile_wifi_force(void)
+static void paint_sntp_status(sntp_status_t status)
 {
-  if (!s_wifi_icon)
+  // A switch, not an if/else: FAILED used to fall into the else and hide the icon, which is how a
+  // device could sit there showing 01/01/1970 with a completely clean status bar. Enumerating the
+  // cases means the compiler flags the next status someone adds instead of silently hiding it.
+  switch (status)
   {
-    return;
+  case SNTP_STATUS_SYNCING:
+    lv_obj_remove_flag(s_sntp_icon, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(s_sntp_icon, LV_SYMBOL_REFRESH);
+    lv_obj_set_style_text_opa(s_sntp_icon, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(s_sntp_icon, lv_palette_main(LV_PALETTE_ORANGE), 0);
+    break;
+
+  case SNTP_STATUS_FAILED:
+    // Red and visible. The time on screen is wrong and nothing else says so.
+    lv_obj_remove_flag(s_sntp_icon, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(s_sntp_icon, LV_SYMBOL_REFRESH);
+    lv_obj_set_style_text_opa(s_sntp_icon, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(s_sntp_icon, lv_palette_main(LV_PALETTE_RED), 0);
+    break;
+
+  case SNTP_STATUS_IDLE:
+  case SNTP_STATUS_SYNCED:
+    // Nothing to report — hidden, so the icon chain collapses around it.
+    lv_obj_add_flag(s_sntp_icon, LV_OBJ_FLAG_HIDDEN);
+    break;
   }
-  const wifi_status_t want = s_pub_wifi; // read once: a publisher may write it at any moment
-  paint_wifi_status(want);
-  s_painted_wifi = want;
+
+  // Re-align chain — TS anchors to WiFi when SNTP is hidden
+  realign_chain();
 }
 
-static void reconcile_wifi(void)
+static void paint_ts_status(ts_status_t status)
 {
-  if (!s_wifi_icon || s_pub_wifi == s_painted_wifi)
+  switch (status)
   {
-    return;
+  case TS_STATUS_IDLE:
+    lv_label_set_text(s_ts_icon, LV_SYMBOL_SHUFFLE);
+    lv_obj_set_style_text_opa(s_ts_icon, LV_OPA_40, 0);
+    lv_obj_remove_local_style_prop(s_ts_icon, LV_STYLE_TEXT_COLOR, 0);
+    break;
+
+  case TS_STATUS_CONNECTING:
+    lv_label_set_text(s_ts_icon, LV_SYMBOL_SHUFFLE);
+    lv_obj_set_style_text_opa(s_ts_icon, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(s_ts_icon, lv_palette_main(LV_PALETTE_ORANGE), 0);
+    break;
+
+  case TS_STATUS_CONNECTED:
+    lv_label_set_text(s_ts_icon, LV_SYMBOL_SHUFFLE);
+    lv_obj_set_style_text_opa(s_ts_icon, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(s_ts_icon, lv_palette_main(LV_PALETTE_GREEN), 0);
+    break;
+
+  case TS_STATUS_ERROR:
+    lv_label_set_text(s_ts_icon, LV_SYMBOL_SHUFFLE);
+    lv_obj_set_style_text_opa(s_ts_icon, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(s_ts_icon, lv_palette_main(LV_PALETTE_RED), 0);
+    break;
   }
-  reconcile_wifi_force();
+
+  realign_chain();
+}
+
+// force=true paints regardless of s_painted_*. status_bar_create() needs it: the icons are
+// brand-new objects there, so nothing can be inferred from what the previous ones showed.
+//
+// Order matters — SNTP hides itself when idle or synced, and realign_chain() anchors the Tailscale
+// icon to whichever of SNTP/WiFi is visible.
+static void reconcile_icons(const bool force)
+{
+  if (s_wifi_icon)
+  {
+    const wifi_status_t want = s_pub_wifi; // read once: a publisher may write it at any moment
+    if (force || want != s_painted_wifi)
+    {
+      paint_wifi_status(want);
+      s_painted_wifi = want;
+    }
+  }
+
+  if (s_sntp_icon)
+  {
+    const sntp_status_t want = s_pub_sntp;
+    if (force || want != s_painted_sntp)
+    {
+      paint_sntp_status(want);
+      s_painted_sntp = want;
+    }
+  }
+
+  if (s_ts_icon)
+  {
+    const ts_status_t want = s_pub_ts;
+    if (force || want != s_painted_ts)
+    {
+      paint_ts_status(want);
+      s_painted_ts = want;
+    }
+  }
 }
 
 static void reconcile_timer_cb(lv_timer_t *timer) // NOLINT(readability-non-const-parameter)
 {
   (void) timer;
-  reconcile_wifi();
+  reconcile_icons(false);
 }
 
 // ============================================================
@@ -330,10 +411,8 @@ void status_bar_create(lv_obj_t *parent)
   }
 
   // Reconcile immediately: this is also the restore-on-recreate path, which is why it paints
-  // unconditionally rather than comparing against what the previous icon showed.
-  reconcile_wifi_force();
-  status_bar_set_sntp_status(s_last_sntp_status);
-  status_bar_set_ts_status(s_last_ts_status);
+  // unconditionally rather than comparing against what the previous icons showed.
+  reconcile_icons(true);
 }
 
 void status_bar_register_battery_cb(status_bar_battery_cb_t cb)
@@ -348,83 +427,16 @@ void status_bar_set_wifi_status(wifi_status_t status)
   s_pub_wifi = status;
 }
 
+// Publish only — see status_bar_set_wifi_status().
 void status_bar_set_sntp_status(sntp_status_t status)
 {
-  s_last_sntp_status = status;
-
-  if (!s_sntp_icon)
-  {
-    return;
-  }
-
-  // A switch, not an if/else: FAILED used to fall into the else and hide the icon, which is how a
-  // device could sit there showing 01/01/1970 with a completely clean status bar. Enumerating the
-  // cases means the compiler flags the next status someone adds instead of silently hiding it.
-  switch (status)
-  {
-  case SNTP_STATUS_SYNCING:
-    lv_obj_remove_flag(s_sntp_icon, LV_OBJ_FLAG_HIDDEN);
-    lv_label_set_text(s_sntp_icon, LV_SYMBOL_REFRESH);
-    lv_obj_set_style_text_opa(s_sntp_icon, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(s_sntp_icon, lv_palette_main(LV_PALETTE_ORANGE), 0);
-    break;
-
-  case SNTP_STATUS_FAILED:
-    // Red and visible. The time on screen is wrong and nothing else says so.
-    lv_obj_remove_flag(s_sntp_icon, LV_OBJ_FLAG_HIDDEN);
-    lv_label_set_text(s_sntp_icon, LV_SYMBOL_REFRESH);
-    lv_obj_set_style_text_opa(s_sntp_icon, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(s_sntp_icon, lv_palette_main(LV_PALETTE_RED), 0);
-    break;
-
-  case SNTP_STATUS_IDLE:
-  case SNTP_STATUS_SYNCED:
-    // Nothing to report — hidden, so the icon chain collapses around it.
-    lv_obj_add_flag(s_sntp_icon, LV_OBJ_FLAG_HIDDEN);
-    break;
-  }
-
-  // Re-align chain — TS anchors to WiFi when SNTP is hidden
-  realign_chain();
+  s_pub_sntp = status;
 }
 
+// Publish only — see status_bar_set_wifi_status().
 void status_bar_set_ts_status(ts_status_t status)
 {
-  s_last_ts_status = status;
-
-  if (!s_ts_icon)
-  {
-    return;
-  }
-
-  switch (status)
-  {
-  case TS_STATUS_IDLE:
-    lv_label_set_text(s_ts_icon, LV_SYMBOL_SHUFFLE);
-    lv_obj_set_style_text_opa(s_ts_icon, LV_OPA_40, 0);
-    lv_obj_remove_local_style_prop(s_ts_icon, LV_STYLE_TEXT_COLOR, 0);
-    break;
-
-  case TS_STATUS_CONNECTING:
-    lv_label_set_text(s_ts_icon, LV_SYMBOL_SHUFFLE);
-    lv_obj_set_style_text_opa(s_ts_icon, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(s_ts_icon, lv_palette_main(LV_PALETTE_ORANGE), 0);
-    break;
-
-  case TS_STATUS_CONNECTED:
-    lv_label_set_text(s_ts_icon, LV_SYMBOL_SHUFFLE);
-    lv_obj_set_style_text_opa(s_ts_icon, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(s_ts_icon, lv_palette_main(LV_PALETTE_GREEN), 0);
-    break;
-
-  case TS_STATUS_ERROR:
-    lv_label_set_text(s_ts_icon, LV_SYMBOL_SHUFFLE);
-    lv_obj_set_style_text_opa(s_ts_icon, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(s_ts_icon, lv_palette_main(LV_PALETTE_RED), 0);
-    break;
-  }
-
-  realign_chain();
+  s_pub_ts = status;
 }
 
 void status_bar_destroy(void)

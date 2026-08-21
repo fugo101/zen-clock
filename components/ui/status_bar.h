@@ -90,16 +90,18 @@ extern "C"
   void status_bar_set_wifi_status(wifi_status_t status);
 
   /**
-   * @brief Update SNTP status indicator.
+   * @brief Publish the SNTP status indicator's desired state.
    *
-   * Must be called inside lvgl_port_lock()/unlock().
+   * Same contract as status_bar_set_wifi_status(): callable from any task, no LVGL lock needed,
+   * repainted on the LVGL task within one reconcile tick and replayed on screen change.
    */
   void status_bar_set_sntp_status(sntp_status_t status);
 
   /**
-   * @brief Update Tailscale (MicroLink) status indicator.
+   * @brief Publish the Tailscale (MicroLink) status indicator's desired state.
    *
-   * Must be called inside lvgl_port_lock()/unlock().
+   * Same contract as status_bar_set_wifi_status(): callable from any task, no LVGL lock needed,
+   * repainted on the LVGL task within one reconcile tick and replayed on screen change.
    */
   void status_bar_set_ts_status(ts_status_t status);
 
