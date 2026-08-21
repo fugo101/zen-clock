@@ -25,6 +25,14 @@ codebase — named defines, two unrelated `case` ladders, raw array subscripts, 
 "row 0 is a header." Reordering the visible list silently misrouted actions to the wrong row.
 Nothing that touches row order may restate the list in prose; it must reference the enum.
 
+This survived the descriptor table of ADR-0006 intact. `settings_key_t` identifies *which
+persisted setting* a row edits and is a separate, shorter enum — eight of `settings_row_t`'s
+sixteen entries are section headers and action rows with no stored value at all. The two are
+joined by a single `.skey` field on each row, so the visible list still has exactly one encoding.
+A row's edit range is no longer written down here either: `.min`/`.max` are filled from the
+descriptor when the screen is created, which is why the same two numbers now bound both what the
+user can dial in and what may be stored.
+
 **The header-skip loop in Settings' focus-prev/next navigation carries an explicit iteration cap.**
 The underlying `ui_circ_next`/`ui_circ_prev` helpers are pure modular arithmetic with no built-in
 termination guarantee, so a future table edit that leaves zero non-header rows would spin the LVGL
