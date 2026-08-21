@@ -16,6 +16,7 @@
 #include "ble_provisioning.h"
 #include "prov_screen.h"
 #include "nav.h"
+#include "input_policy.h"
 #include "microlink.h"
 #include "device_info_screen.h"
 #include <freertos/queue.h>
@@ -402,7 +403,15 @@ void app_handlers_register_nav_callbacks(void)
 // Button handler
 // ============================================================
 
-// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+// input_policy mirrors the BSP button vocabulary rather than including bsp.h, which pulls in
+// esp_lvgl_port.h and would keep the policy off the host test bench. These assertions are what
+// makes the duplication safe.
+_Static_assert((int) INPUT_BTN_BOOT == BSP_BTN_BOOT, "input_policy button ids drifted from BSP");
+_Static_assert((int) INPUT_BTN_IO14 == BSP_BTN_IO14, "input_policy button ids drifted from BSP");
+_Static_assert((int) INPUT_EVENT_SHORT == BSP_BTN_SHORT, "input_policy events drifted from BSP");
+_Static_assert((int) INPUT_EVENT_LONG == BSP_BTN_LONG, "input_policy events drifted from BSP");
+_Static_assert((int) INPUT_EVENT_EMERGENCY == BSP_BTN_EMERGENCY, "input_policy events drifted from BSP");
+
 void on_button_press(const int btn_id, const bsp_btn_event_t event)
 {
   deep_sleep_reset_timer();
@@ -410,74 +419,68 @@ void on_button_press(const int btn_id, const bsp_btn_event_t event)
   // request has left the timer behind and the sleep task is committed to it.
   deep_sleep_cancel();
 
-  // Emergency: IO14 held ≥ 3s → reset WiFi + BLE provisioning (bypasses nav)
-  if (event == BSP_BTN_EMERGENCY && btn_id == BSP_BTN_IO14)
+  // Sampled before anything that can block. The sleep combo means "the other button is still
+  // down as this one fires LONG" — reading the pad after an lvgl_port_lock(0) would let a
+  // release during a screen repaint turn the combo into a stray SELECT.
+  const gpio_num_t other = (btn_id == BSP_BTN_BOOT) ? GPIO_NUM_14 : GPIO_NUM_0;
+  const int other_level = gpio_get_level(other); // active-low: 0 = pressed
+
+  input_outcome_t outcome = input_policy_decide((input_btn_t) btn_id, (input_event_t) event, other_level);
+
+  // The overlay guard only ever rewrites a NAV outcome, so the emergency hold and the sleep
+  // combo resolve without touching LVGL at all — lvgl_port_lock(0) waits portMAX_DELAY, and
+  // parking the button task behind a repaint also stalls bsp_buttons.c's held_ms, which is what
+  // makes the combo unreachable in the first place. Applying it unconditionally would be
+  // correct, just needlessly blocking.
+  if (outcome.kind == INPUT_OUTCOME_NAV)
   {
+    lvgl_port_lock(0);
+    const bool prov_visible = prov_screen_is_visible();
+    lvgl_port_unlock();
+    outcome = input_policy_apply_overlay(outcome, prov_visible);
+  }
+
+  switch (outcome.kind)
+  {
+  case INPUT_OUTCOME_RESET_WIFI:
     ESP_LOGW(tag, "Emergency: resetting WiFi → BLE provisioning");
     post_to_worker(do_reset_wifi);
-    return;
-  }
+    break;
 
-  // Simultaneous hold: both buttons long-pressed → deep sleep
-  if (event == BSP_BTN_LONG)
-  {
-    gpio_num_t other = (btn_id == BSP_BTN_BOOT) ? GPIO_NUM_14 : GPIO_NUM_0;
-    if (gpio_get_level(other) == 0) // active-low: 0 = pressed
-    {
-      ESP_LOGI(tag, "Both buttons held — triggering deep sleep");
-      deep_sleep_trigger();
-      return;
-    }
-  }
+  case INPUT_OUTCOME_DEEP_SLEEP:
+    ESP_LOGI(tag, "Both buttons held — triggering deep sleep");
+    deep_sleep_trigger();
+    break;
 
-  // Map button + event → nav action
-  nav_action_t action;
-  if (btn_id == BSP_BTN_BOOT)
-  {
-    action = (event == BSP_BTN_SHORT) ? NAV_ACTION_UP : NAV_ACTION_SELECT;
-  }
-  else
-  {
-    action = (event == BSP_BTN_SHORT) ? NAV_ACTION_DOWN : NAV_ACTION_BACK;
-  }
-
-  // The QR overlay is a child of whatever screen is active, so any nav transition would delete it
-  // and nothing would ever put it back — provisioning would keep advertising behind a blank UI.
-  // Swallow nav actions while it is up, but let BACK dismiss it: a device that has never been
-  // provisioned stays in this state indefinitely, and it still has to be usable as a clock.
-  // Provisioning continues in the background; Settings → Network → Provisioning brings it back.
-  lvgl_port_lock(0);
-  const bool prov_visible = prov_screen_is_visible();
-  const bool dismissed = (prov_visible && action == NAV_ACTION_BACK);
-  if (dismissed)
-  {
+  case INPUT_OUTCOME_DISMISS_PROV:
+    lvgl_port_lock(0);
     prov_screen_hide();
-  }
-  lvgl_port_unlock();
-
-  if (prov_visible)
-  {
+    lvgl_port_unlock();
     // Posted, not called: ble_provisioning_stop() tears down the manager and wifi_manager_start()
     // wakes the WiFi task — both block long enough to freeze the display and stall the event
     // loop, which is exactly what Phase 2 moved the nav action callbacks off the lock to avoid,
-    // and what the button worker (below) exists to keep off this task entirely.
-    if (dismissed)
-    {
-      post_to_worker(dismiss_provisioning);
-    }
-    return;
+    // and what the button worker exists to keep off this task entirely.
+    post_to_worker(dismiss_provisioning);
+    break;
+
+  case INPUT_OUTCOME_SWALLOW:
+    break;
+
+  case INPUT_OUTCOME_NAV:
+  {
+    lvgl_port_lock(0);
+    nav_action_cb_t deferred = nav_handle_action(outcome.action);
+    lvgl_port_unlock();
+
+    // Posted after the lock is released, not called inline. nav_handle_action() touches no LVGL
+    // after resolving this, so the lock is already clear either way — but running action items
+    // (do_reset_wifi() above all) synchronously here still parked the button task for seconds,
+    // which stalls held_ms accounting in bsp_buttons.c and makes the two-button sleep combo
+    // unreachable mid-reset. The worker runs them instead.
+    post_to_worker(deferred);
+    break;
   }
-
-  lvgl_port_lock(0);
-  nav_action_cb_t deferred = nav_handle_action(action);
-  lvgl_port_unlock();
-
-  // Posted after the lock is released, not called inline. nav_handle_action() touches no LVGL
-  // after resolving this, so the lock is already clear either way — but running action items
-  // (do_reset_wifi() above all) synchronously here still parked the button task for seconds,
-  // which stalls held_ms accounting in bsp_buttons.c and makes the two-button sleep combo
-  // unreachable mid-reset. The worker runs them instead.
-  post_to_worker(deferred);
+  }
 }
 
 // ============================================================
