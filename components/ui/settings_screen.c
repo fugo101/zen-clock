@@ -13,11 +13,9 @@
 //   RANGE  — increments/decrements numeric value (Brightness, Sleep H/M/S, Timezone)
 //   ACTION — executes on select, no edit mode (Sleep Now, NTP Resync, Reset Wi-Fi)
 //
-// Row layout — canonical source is `settings_row_t` in settings_screen.h. 4 headers, 12 items:
-//   Display:  Theme, Brightness
-//   Clock:    Time Format, Show Secs, Timezone
-//   Sleep:    Sleep H, Sleep M, Sleep S, Sleep Now
-//   Network:  NTP Resync, Reset WiFi, Provisioning (re-enter provisioning; keeps the credential)
+// Row layout is `settings_row_t` in settings_screen.h and is not restated here — ADR-0004.
+// Each row that edits a persisted setting carries a `.skey` into the descriptor table
+// (components/settings/settings_table.h), which owns its NVS key, default and range.
 
 #include "settings_screen.h"
 #include "ui_utils.h"
@@ -55,6 +53,13 @@ typedef struct
   int max;
   int step;
   const char *unit;
+  /**
+   * Which persisted setting this row edits, or SETTINGS_KEY_NONE for headers and actions.
+   * This is the only link between row order and the descriptor table: settings_row_t stays the
+   * single source of truth for the list (ADR-0004), and nothing here restates a key, default or
+   * range. `.min`/`.max` are filled from the descriptor in settings_screen_create().
+   */
+  settings_key_t skey;
   // Current value (working copy)
   int value;
 } setting_item_t;
@@ -66,18 +71,32 @@ static const char *s_secs_options[] = {"On", "Off"};
 #define SETTINGS_VISIBLE 5 // items shown at once (5×24px = 120px <= 170-50=120px)
 
 // Indexed by settings_row_t (settings_screen.h) — order must match the enum exactly.
+// `.min`/`.max` are deliberately absent: they come from the descriptor table at create() time,
+// so the edit range and the stored range are the same two numbers rather than two copies.
 static setting_item_t s_items[SETTINGS_ROW_COUNT] = {
     {.label = "- Display -", .type = STYPE_HEADER},
-    {.label = "Theme", .type = STYPE_TOGGLE, .options = s_theme_options, .option_count = 2},
-    {.label = "Brightness", .type = STYPE_RANGE, .min = SETTINGS_BRIGHTNESS_MIN, .max = 100, .step = 10, .unit = "%"},
+    {.label = "Theme",
+     .type = STYPE_TOGGLE,
+     .options = s_theme_options,
+     .option_count = 2,
+     .skey = SETTINGS_KEY_THEME_LIGHT},
+    {.label = "Brightness", .type = STYPE_RANGE, .step = 10, .unit = "%", .skey = SETTINGS_KEY_BRIGHTNESS},
     {.label = "- Clock -", .type = STYPE_HEADER},
-    {.label = "Time Format", .type = STYPE_TOGGLE, .options = s_format_options, .option_count = 2},
-    {.label = "Show Secs", .type = STYPE_TOGGLE, .options = s_secs_options, .option_count = 2},
-    {.label = "Timezone", .type = STYPE_RANGE, .min = SETTINGS_TZ_MIN, .max = SETTINGS_TZ_MAX, .step = 1, .unit = ""},
+    {.label = "Time Format",
+     .type = STYPE_TOGGLE,
+     .options = s_format_options,
+     .option_count = 2,
+     .skey = SETTINGS_KEY_TIME_FMT},
+    {.label = "Show Secs",
+     .type = STYPE_TOGGLE,
+     .options = s_secs_options,
+     .option_count = 2,
+     .skey = SETTINGS_KEY_SHOW_SECS},
+    {.label = "Timezone", .type = STYPE_RANGE, .step = 1, .unit = "", .skey = SETTINGS_KEY_TZ_OFFSET},
     {.label = "- Sleep -", .type = STYPE_HEADER},
-    {.label = "Sleep H", .type = STYPE_RANGE, .min = 0, .max = 23, .step = 1, .unit = ""},
-    {.label = "Sleep M", .type = STYPE_RANGE, .min = 0, .max = 59, .step = 1, .unit = ""},
-    {.label = "Sleep S", .type = STYPE_RANGE, .min = 0, .max = 59, .step = 1, .unit = ""},
+    {.label = "Sleep H", .type = STYPE_RANGE, .step = 1, .unit = "", .skey = SETTINGS_KEY_SLEEP_H},
+    {.label = "Sleep M", .type = STYPE_RANGE, .step = 1, .unit = "", .skey = SETTINGS_KEY_SLEEP_M},
+    {.label = "Sleep S", .type = STYPE_RANGE, .step = 1, .unit = "", .skey = SETTINGS_KEY_SLEEP_S},
     {.label = "Sleep Now", .type = STYPE_ACTION},
     {.label = "- Network -", .type = STYPE_HEADER},
     {.label = "NTP Resync", .type = STYPE_ACTION},
@@ -257,72 +276,77 @@ static void hide_edit_box(void)
 static lv_timer_t *s_flush_timer = NULL;
 static bool s_dirty[SETTINGS_ROW_COUNT] = {false};
 
+// ---- Live effects ------------------------------------------------------------------------
 // Everything the user must see immediately. Cheap: RAM, LEDC, or a tzset().
-// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+//
+// This registry lives here, not in the settings component, because the Sleep entry has to read
+// the screen's working copies: the NVS write is debounced by NVS_FLUSH_DELAY_MS, so asking flash
+// for the timeout at apply time would use the value the user just replaced.
+//
+// Boot deliberately does NOT go through this table — see app_main() and ADR-0006. Only timezone
+// applies identically in both places; theme, brightness and sleep are initialization at boot and
+// update here.
+
+static void apply_theme(int val)
+{
+  ui_set_theme(val != 0);
+}
+
+static void apply_brightness(int val)
+{
+  bsp_display_set_brightness((uint8_t) val, 0);
+}
+
+static void apply_timezone(int val)
+{
+  settings_apply_timezone((int8_t) val);
+}
+
+static void apply_sleep(int val)
+{
+  // The three components share one timeout, so the changed value alone is not enough.
+  (void) val;
+  deep_sleep_update_timeout(compute_sleep_s());
+}
+
+// Indexed by settings_key_t. A NULL entry means the setting has no live effect: Time Format and
+// Show Seconds are read by the clock face when nav re-creates the clock screen.
+static void (*const s_apply[SETTINGS_KEY_COUNT])(int) = {
+    [SETTINGS_KEY_THEME_LIGHT] = apply_theme,  [SETTINGS_KEY_BRIGHTNESS] = apply_brightness,
+    [SETTINGS_KEY_TZ_OFFSET] = apply_timezone, [SETTINGS_KEY_SLEEP_H] = apply_sleep,
+    [SETTINGS_KEY_SLEEP_M] = apply_sleep,      [SETTINGS_KEY_SLEEP_S] = apply_sleep,
+};
+
+// Row value -> stored value. Identity for everything except the two inverted booleans.
+static int stored_value(const setting_item_t *item)
+{
+  return settings_option_index(item->skey, item->value);
+}
+
 static void apply_live(const int index)
 {
   const setting_item_t *item = &s_items[index];
-
-  switch (index)
+  if (item->skey == SETTINGS_KEY_NONE)
   {
-  case SETTINGS_ROW_THEME:
-    ui_set_theme(item->value == 1);
-    break;
-  case SETTINGS_ROW_BRIGHTNESS:
-    bsp_display_set_brightness((uint8_t) item->value, 0);
-    break;
-  case SETTINGS_ROW_TIMEZONE:
-    settings_apply_timezone((int8_t) item->value);
-    break;
-  case SETTINGS_ROW_SLEEP_H:
-  case SETTINGS_ROW_SLEEP_M:
-  case SETTINGS_ROW_SLEEP_S:
-    deep_sleep_update_timeout(compute_sleep_s());
-    break;
-  default:
-    // Time Format and Show Seconds have no live effect — the clock face reads them when
-    // nav re-creates the clock screen, which is exactly what it did before this change.
-    break;
+    return;
+  }
+  void (*const fn)(int) = s_apply[item->skey];
+  if (fn)
+  {
+    fn(stored_value(item));
   }
 }
 
 // The flash side. Only ever called from flush_pending().
-// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+// settings_set() clamps, writes and logs "<nvs_key> = <value>" itself.
 static void persist_item(const int index)
 {
   const setting_item_t *item = &s_items[index];
-
-  // settings_set() clamps, writes and logs "<nvs_key> = <value>" itself, so the eight
-  // per-row ESP_LOGI formats this switch used to carry are gone.
-  switch (index)
+  if (item->skey == SETTINGS_KEY_NONE)
   {
-  case SETTINGS_ROW_THEME:
-    settings_set(SETTINGS_KEY_THEME_LIGHT, settings_option_index(SETTINGS_KEY_THEME_LIGHT, item->value));
-    break;
-  case SETTINGS_ROW_BRIGHTNESS:
-    settings_set(SETTINGS_KEY_BRIGHTNESS, item->value);
-    break;
-  case SETTINGS_ROW_TIME_FORMAT:
-    settings_set(SETTINGS_KEY_TIME_FMT, settings_option_index(SETTINGS_KEY_TIME_FMT, item->value));
-    break;
-  case SETTINGS_ROW_SHOW_SECS:
-    settings_set(SETTINGS_KEY_SHOW_SECS, settings_option_index(SETTINGS_KEY_SHOW_SECS, item->value));
-    break;
-  case SETTINGS_ROW_TIMEZONE:
-    settings_set(SETTINGS_KEY_TZ_OFFSET, item->value);
-    break;
-  case SETTINGS_ROW_SLEEP_H:
-    settings_set(SETTINGS_KEY_SLEEP_H, item->value);
-    break;
-  case SETTINGS_ROW_SLEEP_M:
-    settings_set(SETTINGS_KEY_SLEEP_M, item->value);
-    break;
-  case SETTINGS_ROW_SLEEP_S:
-    settings_set(SETTINGS_KEY_SLEEP_S, item->value);
-    break;
-  default:
-    break;
+    return;
   }
+  settings_set(item->skey, stored_value(item));
 }
 
 static void cancel_flush_timer(void)
@@ -379,6 +403,45 @@ static void apply_change(const int index)
   schedule_flush();
 }
 
+// Pulls each settings row's edit range and current value from the descriptor table. Extracted
+// from settings_screen_create() to keep that function under the repo's cognitive-complexity
+// threshold, which it crossed once this loop moved in.
+static void load_from_descriptors(void)
+{
+  // settings_option_index() is the identity for non-inverted settings, so one expression serves
+  // TOGGLE and RANGE alike, and it is involutive, so persist_item() reverses it with the same call.
+  for (int i = 0; i < SETTINGS_ROW_COUNT; i++)
+  {
+    const settings_key_t key = s_items[i].skey;
+    if (key == SETTINGS_KEY_NONE)
+    {
+      // Headers and actions have no stored value, but a RANGE row without a `.skey` would keep
+      // min == max == 0: it would render as "0" and ignore every button press, with nothing on
+      // screen or in the log saying why. Since the range moved into the descriptor, the omission
+      // is no longer visible on the row's own line, so say it out loud instead.
+      if (s_items[i].type == STYPE_RANGE)
+      {
+        ESP_LOGE(tag, "row %d is RANGE but has no .skey — it will not be editable", i);
+      }
+      continue;
+    }
+    const settings_desc_t *desc = settings_desc(key);
+    if (!desc)
+    {
+      ESP_LOGE(tag, "row %d has an unknown .skey (%d)", i, (int) key);
+      continue;
+    }
+    // int8_t -> int is a widening conversion that must sign-extend: the timezone minimum is -12.
+    // bugprone-signed-char-misuse suggests casting through unsigned char, which would turn that
+    // into 244.
+    // NOLINTNEXTLINE(bugprone-signed-char-misuse)
+    s_items[i].min = desc->min;
+    // NOLINTNEXTLINE(bugprone-signed-char-misuse)
+    s_items[i].max = desc->max;
+    s_items[i].value = settings_option_index(key, settings_get(key));
+  }
+}
+
 // ============================================================
 // Public API
 // ============================================================
@@ -393,20 +456,7 @@ void settings_screen_create(lv_obj_t *parent)
   // would load the value the user just replaced. Normally a no-op: exit_edit() already flushed.
   flush_pending();
 
-  // Load current values from NVS
-  // settings_option_index() is involutive, so the same call that turns a stored bool into an
-  // option index below turns it back in persist_item() — the two inversions can no longer drift.
-  s_items[SETTINGS_ROW_THEME].value =
-      settings_option_index(SETTINGS_KEY_THEME_LIGHT, settings_get_bool(SETTINGS_KEY_THEME_LIGHT));
-  s_items[SETTINGS_ROW_BRIGHTNESS].value = settings_get(SETTINGS_KEY_BRIGHTNESS);
-  s_items[SETTINGS_ROW_TIME_FORMAT].value =
-      settings_option_index(SETTINGS_KEY_TIME_FMT, settings_get_bool(SETTINGS_KEY_TIME_FMT));
-  s_items[SETTINGS_ROW_SHOW_SECS].value =
-      settings_option_index(SETTINGS_KEY_SHOW_SECS, settings_get_bool(SETTINGS_KEY_SHOW_SECS));
-  s_items[SETTINGS_ROW_TIMEZONE].value = settings_get(SETTINGS_KEY_TZ_OFFSET);
-  s_items[SETTINGS_ROW_SLEEP_H].value = settings_get(SETTINGS_KEY_SLEEP_H);
-  s_items[SETTINGS_ROW_SLEEP_M].value = settings_get(SETTINGS_KEY_SLEEP_M);
-  s_items[SETTINGS_ROW_SLEEP_S].value = settings_get(SETTINGS_KEY_SLEEP_S);
+  load_from_descriptors();
 
   // Title
   lv_obj_t *title = lv_label_create(parent);

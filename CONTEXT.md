@@ -13,8 +13,12 @@ One full-screen LVGL view the navigation state machine can show — Clock, Menu,
 _Avoid_: Page, view, activity
 
 **Edit mode**:
-The in-place state a Settings row enters on `SELECT`, where `UP`/`DOWN` change the row's value instead of moving the cursor, auto-saving to NVS as they go.
+The in-place state a Settings row enters on `SELECT`, where `UP`/`DOWN` change the row's value instead of moving the cursor. The effect the user can see is applied on every press; the NVS write is debounced behind a 1 s timer and flushed on exit, so holding a button costs one flash write rather than one per press.
 _Avoid_: Edit screen, focus mode
+
+**Setting descriptor**:
+The purely domain-level record of one persisted setting — its storage key, default value, valid range, and, for a boolean, whether the displayed option order runs opposite to the stored value. One descriptor serves both reading and writing, so a value outside the range cannot exist in either direction. It deliberately knows nothing about the setting's display label, its edit step, or what changing it does to the hardware.
+_Avoid_: Setting, config entry, settings row
 
 **Deep sleep**:
 The device's low-power state, entered by inactivity timeout or the two-button combo, that cuts the LCD power rail and wakes only on a wake-pin interrupt.
