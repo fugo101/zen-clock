@@ -10,6 +10,8 @@
 #include "prov_screen.h"
 #include "lvgl.h"
 
+#include <freertos/FreeRTOS.h>
+
 #include <stdio.h>
 #include <string.h>
 
@@ -20,6 +22,36 @@
 #define TEXT_WIDTH   (320 - TEXT_X_START - 8)
 
 static lv_obj_t *s_overlay = NULL;
+
+// ============================================================
+// Published overlay intent
+//
+// prov_screen_show()/hide() are called from the BLE event loop, the button task and the button
+// worker. None of them may take the LVGL lock: the BLE handler shares the default event loop with
+// the WiFi driver's own events, and the button task parks bsp_buttons.c's held_ms while it waits.
+// So they publish an intent — "the QR should be up, with this name and password" — and ui.c's
+// reconcile tick builds or tears down the overlay on the LVGL task.
+//
+// This is also why the overlay is intent rather than a one-shot paint: prov_screen_show() cannot
+// be skipped or lost. A dropped paint here means no QR at all and a device that looks dead during
+// setup, which no "the next event will repaint it" argument can excuse.
+//
+// The three fields must be read as a set, so a spinlock guards them — held for two memcpys and
+// nothing else. Formatting happens outside it: portENTER_CRITICAL disables interrupts on this
+// core, snprintf is flash-resident newlib, and these publishers run on the BLE default event loop
+// and on btn_worker, where added ISR latency is not free.
+// ============================================================
+static portMUX_TYPE s_intent_mux = portMUX_INITIALIZER_UNLOCKED;
+static bool s_intent_on = false;
+static char s_intent_name[32] = {0};
+static char s_intent_pass[16] = {0};
+
+// What the overlay currently on screen was built from, so a publish carrying different
+// credentials rebuilds it instead of being silently dropped. LVGL side only.
+static char s_built_name[sizeof(s_intent_name)] = {0};
+static char s_built_pass[sizeof(s_intent_pass)] = {0};
+
+static void build_overlay(const char *device_name, const char *password);
 
 // The overlay is parented to whatever screen is active when provisioning starts, and nav.c
 // deletes the old screen on every transition — which recursively deletes this overlay. Buttons
@@ -37,11 +69,76 @@ static void overlay_deleted_cb(lv_event_t *e)
 
 void prov_screen_show(const char *device_name, const char *password)
 {
-  if (s_overlay)
+  char name[sizeof(s_intent_name)];
+  char pass[sizeof(s_intent_pass)];
+  snprintf(name, sizeof(name), "%s", device_name ? device_name : "");
+  snprintf(pass, sizeof(pass), "%s", password ? password : "");
+
+  portENTER_CRITICAL(&s_intent_mux);
+  memcpy(s_intent_name, name, sizeof(s_intent_name));
+  memcpy(s_intent_pass, pass, sizeof(s_intent_pass));
+  s_intent_on = true;
+  portEXIT_CRITICAL(&s_intent_mux);
+}
+
+void prov_screen_hide(void)
+{
+  portENTER_CRITICAL(&s_intent_mux);
+  s_intent_on = false;
+  portEXIT_CRITICAL(&s_intent_mux);
+}
+
+bool prov_screen_is_visible(void)
+{
+  // Reports the published intent, not the widget. That is what every caller actually wants: the
+  // deep-sleep inhibit and the nav-action guard are asking "is the user in the middle of setup",
+  // and neither may take the LVGL lock to find out. It also closes an unsynchronized read — the
+  // inhibit callback used to touch s_overlay from the deep-sleep timer with no lock at all.
+  portENTER_CRITICAL(&s_intent_mux);
+  const bool on = s_intent_on;
+  portEXIT_CRITICAL(&s_intent_mux);
+  return on;
+}
+
+void prov_screen_reconcile(void)
+{
+  bool want = false;
+  char name[sizeof(s_intent_name)];
+  char pass[sizeof(s_intent_pass)];
+
+  portENTER_CRITICAL(&s_intent_mux);
+  want = s_intent_on;
+  memcpy(name, s_intent_name, sizeof(name));
+  memcpy(pass, s_intent_pass, sizeof(pass));
+  portEXIT_CRITICAL(&s_intent_mux);
+
+  // Rebuild on changed credentials, not just on a missing overlay. The header promises the
+  // published name and password are what ends up on screen, and do_provisioning()'s "already
+  // active" branch re-publishes freshly fetched values on BLE_PROV_FAILED. They happen to be
+  // identical today because the password is MAC-derived, but that is ble_provisioning.c's
+  // business, not something this file may assume.
+  const bool stale = s_overlay && (strcmp(name, s_built_name) != 0 || strcmp(pass, s_built_pass) != 0);
+
+  // s_overlay, not the intent, decides whether to build: nav.c deletes the active screen on every
+  // transition and takes this overlay with it (see overlay_deleted_cb). If that happens while the
+  // intent is still on, rebuilding is the correct answer, not leaving a blank clock behind a
+  // swallowed-input guard.
+  if (stale || (!want && s_overlay))
   {
-    return;
+    lv_obj_delete(s_overlay);
+    s_overlay = NULL;
   }
 
+  if (want && !s_overlay)
+  {
+    build_overlay(name, pass);
+    memcpy(s_built_name, name, sizeof(s_built_name));
+    memcpy(s_built_pass, pass, sizeof(s_built_pass));
+  }
+}
+
+static void build_overlay(const char *device_name, const char *password)
+{
   // Full-screen black overlay on top of the current screen
   s_overlay = lv_obj_create(lv_screen_active());
   lv_obj_add_event_cb(s_overlay, overlay_deleted_cb, LV_EVENT_DELETE, NULL);
@@ -107,20 +204,4 @@ void prov_screen_show(const char *device_name, const char *password)
   lv_obj_set_style_text_font(devlabel, &lv_font_montserrat_12, 0);
   lv_label_set_text(devlabel, device_name ? device_name : "");
   lv_obj_set_pos(devlabel, TEXT_X_START, 148);
-}
-
-void prov_screen_hide(void)
-{
-  if (!s_overlay)
-  {
-    return;
-  }
-
-  lv_obj_delete(s_overlay);
-  s_overlay = NULL;
-}
-
-bool prov_screen_is_visible(void)
-{
-  return s_overlay != NULL;
 }

@@ -40,9 +40,6 @@ static uint32_t s_reconnect_backoff_s = BACKOFF_START_S;
 
 #define TS_POLL_PERIOD_US (10ULL * 1000000ULL)
 
-// How long on_wifi_event() waits for the LVGL lock before skipping a paint.
-// See wifi_event_lvgl_lock() below for what is still allowed to use it.
-#define WIFI_EVENT_LOCK_TIMEOUT_MS 50
 static bool s_sntp_started = false;
 
 // True while WiFi is associated but the DNS probe failed. Kept here rather than queried from the
@@ -317,9 +314,7 @@ static void do_provisioning(void)
   ble_provisioning_get_device_name(dev_name, sizeof(dev_name));
   ble_provisioning_get_password(prov_pass, sizeof(prov_pass));
 
-  lvgl_port_lock(0);
   prov_screen_show(dev_name, prov_pass);
-  lvgl_port_unlock();
 }
 
 // Dismissing the QR overlay on a device that already has a credential means "never mind" — and
@@ -407,24 +402,20 @@ void on_button_press(const int btn_id, const bsp_btn_event_t event)
   deep_sleep_cancel();
 
   // Sampled before anything that can block. The sleep combo means "the other button is still
-  // down as this one fires LONG" — reading the pad after an lvgl_port_lock(0) would let a
-  // release during a screen repaint turn the combo into a stray SELECT.
+  // down as this one fires LONG" — reading the pad after the lvgl_port_lock(0) further down
+  // would let a release during a screen repaint turn the combo into a stray SELECT.
   const gpio_num_t other = (btn_id == BSP_BTN_BOOT) ? GPIO_NUM_14 : GPIO_NUM_0;
   const int other_level = gpio_get_level(other); // active-low: 0 = pressed
 
   input_outcome_t outcome = input_policy_decide((input_btn_t) btn_id, (input_event_t) event, other_level);
 
-  // The overlay guard only ever rewrites a NAV outcome, so the emergency hold and the sleep
-  // combo resolve without touching LVGL at all — lvgl_port_lock(0) waits portMAX_DELAY, and
-  // parking the button task behind a repaint also stalls bsp_buttons.c's held_ms, which is what
-  // makes the combo unreachable in the first place. Applying it unconditionally would be
-  // correct, just needlessly blocking.
+  // The guard is free now — prov_screen_is_visible() reads a published intent and takes no lock.
+  // It stays behind the NAV check anyway: input_policy_apply_overlay() is defined only to rewrite
+  // a NAV outcome, and running it on an emergency-hold or sleep-combo outcome would say the
+  // escape hatches are the overlay's to veto, which they are not.
   if (outcome.kind == INPUT_OUTCOME_NAV)
   {
-    lvgl_port_lock(0);
-    const bool prov_visible = prov_screen_is_visible();
-    lvgl_port_unlock();
-    outcome = input_policy_apply_overlay(outcome, prov_visible);
+    outcome = input_policy_apply_overlay(outcome, prov_screen_is_visible());
   }
 
   switch (outcome.kind)
@@ -440,9 +431,7 @@ void on_button_press(const int btn_id, const bsp_btn_event_t event)
     break;
 
   case INPUT_OUTCOME_DISMISS_PROV:
-    lvgl_port_lock(0);
     prov_screen_hide();
-    lvgl_port_unlock();
     // Posted, not called: ble_provisioning_stop() tears down the manager and wifi_manager_start()
     // wakes the WiFi task — both block long enough to freeze the display and stall the event
     // loop, which is exactly what Phase 2 moved the nav action callbacks off the lock to avoid,
@@ -455,6 +444,12 @@ void on_button_press(const int btn_id, const bsp_btn_event_t event)
 
   case INPUT_OUTCOME_NAV:
   {
+    // The last unbounded LVGL lock taken off the LVGL task, and it stays. Everything else that
+    // wanted the screen changed was reporting state, so it could publish and let the reconcile
+    // tick paint. A nav action is not state: the button task needs the transition to have
+    // happened before it can know what deferred work came out of it, and the screen must move
+    // on the press, not up to a tick later. The task blocked is the button task, whose own
+    // responsiveness is already the thing btn_worker exists to protect.
     lvgl_port_lock(0);
     nav_action_cb_t deferred = nav_handle_action(outcome.action);
     lvgl_port_unlock();
@@ -523,10 +518,8 @@ void on_ble_prov_event(const ble_prov_event_t event, const char *ssid, const cha
     ble_provisioning_get_device_name(dev_name, sizeof(dev_name));
     ble_provisioning_get_password(prov_pass, sizeof(prov_pass));
     ESP_LOGI(tag, "BLE provisioning active: %s", dev_name);
-    lvgl_port_lock(0);
     status_bar_set_wifi_status(WIFI_STATUS_PROVISIONING);
     prov_screen_show(dev_name, prov_pass);
-    lvgl_port_unlock();
     break;
   }
 
@@ -538,9 +531,7 @@ void on_ble_prov_event(const ble_prov_event_t event, const char *ssid, const cha
   case BLE_PROV_SUCCESS:
   {
     ESP_LOGI(tag, "BLE provisioning complete — starting WiFi");
-    lvgl_port_lock(0);
     prov_screen_hide();
-    lvgl_port_unlock();
     ble_provisioning_stop();
     // Only reached on a genuine completion — this frees ~110 KB of BT RAM for good.
     ble_provisioning_release_memory();
@@ -558,9 +549,7 @@ void on_ble_prov_event(const ble_prov_event_t event, const char *ssid, const cha
     // frees the BT controller for good, and the user has to be able to come back via
     // Settings → Network → Provisioning.
     ESP_LOGI(tag, "BLE provisioning stopped (cancelled) — resuming WiFi");
-    lvgl_port_lock(0);
     prov_screen_hide();
-    lvgl_port_unlock();
     // Safe now, and only now: the manager has released the radio. do_provisioning() stopped WiFi
     // on the way in, and per invariant 1 nothing but this call ever brings it back.
     const esp_err_t ret = wifi_manager_start();
@@ -598,29 +587,6 @@ static bool microlink_configured(void)
 {
   const char *const auth_key = CONFIG_ML_TAILSCALE_AUTH_KEY;
   return auth_key[0] != '\0' || microlink_has_stored_credentials();
-}
-
-// Bounded wait: on_wifi_event() runs synchronously on the wifi task from inside fire_event(),
-// including calls made deep inside
-// try_connect_candidate(); an unbounded lvgl_port_lock(0) there could stall the wifi task for as
-// long as the LVGL task is busy, invisible to wifi_manager_stop()'s STOP_TIMEOUT_MS polling.
-//
-// Only survives for device_info_screen_set_ml(), where a skipped update is genuinely free: the
-// System Info screen re-reads the same handle on its own 10s timer. It must never be used for
-// anything a later event will not repeat — the WiFi status icon used to be exactly that, and a
-// timeout on entering a terminal state (CONNECTED / NO_INTERNET) left the icon stale for as long
-// as the connection lasted, because there is no next event. That icon is published now.
-//
-// On failure the mutex is NOT held: callers must not call lvgl_port_unlock() when this returns
-// false.
-static bool wifi_event_lvgl_lock(void)
-{
-  if (!lvgl_port_lock(WIFI_EVENT_LOCK_TIMEOUT_MS))
-  {
-    ESP_LOGD(tag, "LVGL busy — skipping a WiFi-task paint");
-    return false;
-  }
-  return true;
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
@@ -679,16 +645,7 @@ void on_wifi_event(const wifi_manager_event_t event)
       if (s_ml)
       {
         microlink_start(s_ml);
-        // device_info_screen_set_ml() writes a static handle and then updates labels via
-        // lv_label_set_text(). This runs on the wifi_mgr task, so it has to be serialized
-        // against the LVGL task — including the screen's own 10s timer, which calls the
-        // very same update_tailscale(). Bounded: if the lock isn't free the screen's own
-        // 10s timer will pick up the same handle on its next tick.
-        if (wifi_event_lvgl_lock())
-        {
-          device_info_screen_set_ml(s_ml);
-          lvgl_port_unlock();
-        }
+        device_info_screen_set_ml(s_ml);
         if (!s_ts_poll_timer)
         {
           const esp_timer_create_args_t ts_args = {.callback = ts_poll_cb, .name = "ts_poll"};
@@ -712,13 +669,8 @@ void on_wifi_event(const wifi_manager_event_t event)
     }
     else
     {
-      // Kept outside the lock — microlink_rebind() vTaskDelays ~300ms reopening sockets.
       microlink_rebind(s_ml);
-      if (wifi_event_lvgl_lock())
-      {
-        device_info_screen_set_ml(s_ml);
-        lvgl_port_unlock();
-      }
+      device_info_screen_set_ml(s_ml);
     }
     break;
 
