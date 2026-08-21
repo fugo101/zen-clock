@@ -9,6 +9,7 @@
 #include "timezone_fmt.h"
 #include "backoff.h"
 #include "input_policy.h"
+#include "battery_view.h"
 
 void setUp(void)
 {
@@ -219,6 +220,110 @@ static void test_input_policy_boot_emergency_is_still_swallowed_by_the_overlay(v
                         decide(INPUT_BTN_BOOT, INPUT_EVENT_EMERGENCY, PIN_RELEASED, true).kind);
 }
 
+// ============================================================
+// battery_view — one mapping, consumed by the status bar and the brightness clamp
+// ============================================================
+
+static void test_battery_view_symbol_ladder_boundaries(void)
+{
+  // The ladder is strictly-greater-than, so every boundary pct belongs to the rung below it.
+  TEST_ASSERT_EQUAL_INT(BATTERY_SYMBOL_FULL, battery_view(76, false).symbol);
+  TEST_ASSERT_EQUAL_INT(BATTERY_SYMBOL_3, battery_view(75, false).symbol);
+  TEST_ASSERT_EQUAL_INT(BATTERY_SYMBOL_3, battery_view(51, false).symbol);
+  TEST_ASSERT_EQUAL_INT(BATTERY_SYMBOL_2, battery_view(50, false).symbol);
+  TEST_ASSERT_EQUAL_INT(BATTERY_SYMBOL_2, battery_view(26, false).symbol);
+  TEST_ASSERT_EQUAL_INT(BATTERY_SYMBOL_1, battery_view(25, false).symbol);
+  TEST_ASSERT_EQUAL_INT(BATTERY_SYMBOL_1, battery_view(6, false).symbol);
+  TEST_ASSERT_EQUAL_INT(BATTERY_SYMBOL_EMPTY, battery_view(5, false).symbol);
+}
+
+static void test_battery_view_formats_the_percentage(void)
+{
+  TEST_ASSERT_EQUAL_STRING("42%", battery_view(42, false).text);
+  TEST_ASSERT_EQUAL_STRING("100%", battery_view(100, false).text);
+  TEST_ASSERT_EQUAL_STRING("0%", battery_view(0, false).text);
+  TEST_ASSERT_EQUAL_STRING("127%", battery_view(127, false).text); // never truncated
+}
+
+static void test_battery_view_usb_overrides_charge_level(void)
+{
+  // The ADC reads the USB rail, not the battery, so pct is meaningless while plugged in: the
+  // charge glyph carries the meaning and the number is hidden. Never low, never critical.
+  const battery_view_t v = battery_view(2, true);
+  TEST_ASSERT_EQUAL_INT(BATTERY_SYMBOL_CHARGE, v.symbol);
+  TEST_ASSERT_EQUAL_STRING("", v.text);
+  TEST_ASSERT_EQUAL_INT(BATTERY_TINT_DEFAULT, v.tint);
+  TEST_ASSERT_FALSE(v.low);
+  TEST_ASSERT_FALSE(v.blink);
+}
+
+static void test_battery_view_no_reading_is_na_and_not_low(void)
+{
+  // Unknown must not dim the screen, tint the icon, or blink it.
+  const battery_view_t v = battery_view(-1, false);
+  TEST_ASSERT_EQUAL_INT(BATTERY_SYMBOL_EMPTY, v.symbol);
+  TEST_ASSERT_EQUAL_STRING("N/A", v.text);
+  TEST_ASSERT_EQUAL_INT(BATTERY_TINT_DEFAULT, v.tint);
+  TEST_ASSERT_FALSE(v.low);
+  TEST_ASSERT_FALSE(v.blink);
+}
+
+static void test_battery_view_low_boundary(void)
+{
+  TEST_ASSERT_TRUE(battery_view(14, false).low);
+  TEST_ASSERT_EQUAL_INT(BATTERY_TINT_LOW, battery_view(14, false).tint);
+  TEST_ASSERT_FALSE(battery_view(15, false).low);
+  TEST_ASSERT_EQUAL_INT(BATTERY_TINT_DEFAULT, battery_view(15, false).tint);
+}
+
+static void test_battery_view_critical_boundary(void)
+{
+  TEST_ASSERT_TRUE(battery_view(4, false).blink);
+  TEST_ASSERT_FALSE(battery_view(5, false).blink);
+  TEST_ASSERT_TRUE(battery_view(4, false).low); // critical is always also low
+}
+
+static void test_battery_clamp_fires_once_on_the_edge(void)
+{
+  bool was_low = false;
+  TEST_ASSERT_EQUAL_INT(BATTERY_CLAMP_ON, battery_clamp_step(&was_low, battery_view(10, false)));
+  // Level-triggered would clamp again here and fight a user who raised brightness deliberately.
+  TEST_ASSERT_EQUAL_INT(BATTERY_CLAMP_NONE, battery_clamp_step(&was_low, battery_view(9, false)));
+  TEST_ASSERT_TRUE(was_low);
+}
+
+static void test_battery_clamp_restores_on_recovery(void)
+{
+  bool was_low = true;
+  TEST_ASSERT_EQUAL_INT(BATTERY_CLAMP_OFF, battery_clamp_step(&was_low, battery_view(50, false)));
+  TEST_ASSERT_FALSE(was_low);
+  TEST_ASSERT_EQUAL_INT(BATTERY_CLAMP_NONE, battery_clamp_step(&was_low, battery_view(50, false)));
+}
+
+static void test_battery_clamp_releases_on_usb(void)
+{
+  // Plugging in while low is a recovery, even though the charge level has not moved.
+  bool was_low = true;
+  TEST_ASSERT_EQUAL_INT(BATTERY_CLAMP_OFF, battery_clamp_step(&was_low, battery_view(10, true)));
+  TEST_ASSERT_FALSE(was_low);
+}
+
+static void test_battery_clamp_releases_when_the_reading_is_lost(void)
+{
+  // Deliberate: an ADC failure while low restores full brightness rather than holding the clamp
+  // on a reading nothing can confirm.
+  bool was_low = true;
+  TEST_ASSERT_EQUAL_INT(BATTERY_CLAMP_OFF, battery_clamp_step(&was_low, battery_view(-1, false)));
+  TEST_ASSERT_FALSE(was_low);
+}
+
+static void test_battery_clamp_starts_quiet_on_a_healthy_battery(void)
+{
+  bool was_low = false;
+  TEST_ASSERT_EQUAL_INT(BATTERY_CLAMP_NONE, battery_clamp_step(&was_low, battery_view(80, false)));
+  TEST_ASSERT_FALSE(was_low);
+}
+
 int main(void)
 {
   UNITY_BEGIN();
@@ -244,5 +349,16 @@ int main(void)
   RUN_TEST(test_input_policy_qr_overlay_back_dismisses);
   RUN_TEST(test_input_policy_overlay_guard_leaves_escape_hatches_alone);
   RUN_TEST(test_input_policy_boot_emergency_is_still_swallowed_by_the_overlay);
+  RUN_TEST(test_battery_view_symbol_ladder_boundaries);
+  RUN_TEST(test_battery_view_formats_the_percentage);
+  RUN_TEST(test_battery_view_usb_overrides_charge_level);
+  RUN_TEST(test_battery_view_no_reading_is_na_and_not_low);
+  RUN_TEST(test_battery_view_low_boundary);
+  RUN_TEST(test_battery_view_critical_boundary);
+  RUN_TEST(test_battery_clamp_fires_once_on_the_edge);
+  RUN_TEST(test_battery_clamp_restores_on_recovery);
+  RUN_TEST(test_battery_clamp_releases_on_usb);
+  RUN_TEST(test_battery_clamp_releases_when_the_reading_is_lost);
+  RUN_TEST(test_battery_clamp_starts_quiet_on_a_healthy_battery);
   return UNITY_END();
 }

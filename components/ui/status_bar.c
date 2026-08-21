@@ -5,7 +5,6 @@
 #include "ui_list.h"
 #include "bsp.h"
 
-#include <stdio.h>
 #include <esp_log.h>
 
 static const char *const tag = "StatusBar";
@@ -95,81 +94,58 @@ static void set_battery_blink(bool enabled)
 // ============================================================
 // Battery timer callback — runs inside lv_timer_handler()
 // ============================================================
-// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+static const char *symbol_text(const battery_symbol_t symbol)
+{
+  switch (symbol)
+  {
+  case BATTERY_SYMBOL_CHARGE:
+    return LV_SYMBOL_CHARGE;
+  case BATTERY_SYMBOL_FULL:
+    return LV_SYMBOL_BATTERY_FULL;
+  case BATTERY_SYMBOL_3:
+    return LV_SYMBOL_BATTERY_3;
+  case BATTERY_SYMBOL_2:
+    return LV_SYMBOL_BATTERY_2;
+  case BATTERY_SYMBOL_1:
+    return LV_SYMBOL_BATTERY_1;
+  case BATTERY_SYMBOL_EMPTY:
+    return LV_SYMBOL_BATTERY_EMPTY;
+  }
+  return LV_SYMBOL_BATTERY_EMPTY; // unreachable — the switch is exhaustive, so -Wswitch still bites
+}
+
 static void battery_timer_cb(lv_timer_t *timer) // NOLINT(readability-non-const-parameter)
 {
   (void) timer;
-  char buf[16];
 
   int pct;
   bool usb;
   bsp_battery_read(&pct, &usb);
-  // Low-battery state never applies on USB power — it is about running out, not about charge
-  // level while plugged in.
-  const bool low = pct >= 0 && !usb && pct < BATT_LOW_PCT;
-  const bool critical = pct >= 0 && !usb && pct < BATT_CRIT_PCT;
+  const battery_view_t view = battery_view(pct, usb);
+
+  lv_label_set_text(s_bat_pct, view.text);
+  lv_label_set_text(s_bat_icon, symbol_text(view.symbol));
+
+  switch (view.tint)
+  {
+  case BATTERY_TINT_LOW:
+    lv_obj_set_style_text_color(s_bat_icon, lv_palette_main(LV_PALETTE_RED), 0);
+    break;
+  case BATTERY_TINT_DEFAULT:
+    lv_obj_remove_local_style_prop(s_bat_icon, LV_STYLE_TEXT_COLOR, 0);
+    break;
+  }
+
+  set_battery_blink(view.blink);
 
   if (pct >= 0)
   {
-    // Update icon based on USB / charge level
-    if (usb)
-    {
-      // pct is not meaningful on USB (ADC reads the USB rail, not the battery — clamps to the
-      // top of the curve); the charge icon alone says everything the number would have.
-      lv_label_set_text(s_bat_pct, "");
-      lv_label_set_text(s_bat_icon, LV_SYMBOL_CHARGE);
-    }
-    else
-    {
-      snprintf(buf, sizeof(buf), "%d%%", pct);
-      lv_label_set_text(s_bat_pct, buf);
-
-      if (pct > 75)
-      {
-        lv_label_set_text(s_bat_icon, LV_SYMBOL_BATTERY_FULL);
-      }
-      else if (pct > 50)
-      {
-        lv_label_set_text(s_bat_icon, LV_SYMBOL_BATTERY_3);
-      }
-      else if (pct > 25)
-      {
-        lv_label_set_text(s_bat_icon, LV_SYMBOL_BATTERY_2);
-      }
-      else if (pct > 5)
-      {
-        lv_label_set_text(s_bat_icon, LV_SYMBOL_BATTERY_1);
-      }
-      else
-      {
-        lv_label_set_text(s_bat_icon, LV_SYMBOL_BATTERY_EMPTY);
-      }
-    }
-
-    if (low)
-    {
-      lv_obj_set_style_text_color(s_bat_icon, lv_palette_main(LV_PALETTE_RED), 0);
-    }
-    else
-    {
-      lv_obj_remove_local_style_prop(s_bat_icon, LV_STYLE_TEXT_COLOR, 0);
-    }
-    set_battery_blink(critical);
-
     ESP_LOGI(tag, "Battery: %d%% (%s)", pct, usb ? "USB" : "BATT");
-  }
-  else
-  {
-    // No battery connected or ADC error
-    lv_label_set_text(s_bat_pct, "N/A");
-    lv_label_set_text(s_bat_icon, LV_SYMBOL_BATTERY_EMPTY);
-    lv_obj_remove_local_style_prop(s_bat_icon, LV_STYLE_TEXT_COLOR, 0);
-    set_battery_blink(false);
   }
 
   if (s_battery_cb)
   {
-    s_battery_cb(pct, usb);
+    s_battery_cb(view);
   }
 
   // Re-align entire chain (text width may have changed)
@@ -221,7 +197,14 @@ void status_bar_create(lv_obj_t *parent)
 
   // --- LVGL timer: update battery every 30 seconds ---
   s_bat_timer = lv_timer_create(battery_timer_cb, 30000, NULL);
-  lv_timer_ready(s_bat_timer); // Fire immediately on first tick
+  if (s_bat_timer)
+  {
+    lv_timer_ready(s_bat_timer); // Fire immediately on first tick
+  }
+  else
+  {
+    ESP_LOGE(tag, "Battery timer creation failed — battery indicator will not update");
+  }
 
   // Restore last known status (survives screen transitions)
   status_bar_set_wifi_status(s_last_wifi_status);

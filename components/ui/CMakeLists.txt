@@ -6,5 +6,5 @@ idf_component_register(
         "fonts/lv_font_ds_digital_48.c"
         "fonts/lv_font_ds_digital_16.c"
         INCLUDE_DIRS "."
-        REQUIRES lvgl bsp settings deep_sleep wifi_manager microlink sntp_sync esp_app_format
+        REQUIRES lvgl bsp battery_view settings deep_sleep wifi_manager microlink sntp_sync esp_app_format
 )

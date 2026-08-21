@@ -1,0 +1,1 @@
+../../components/battery_view/battery_view.c
