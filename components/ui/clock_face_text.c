@@ -101,8 +101,8 @@ static lv_obj_t *make_segment(lv_obj_t *parent, int32_t w, const char *init, lv_
 // ============================================================
 void clock_face_create(lv_obj_t *parent)
 {
-  const bool show_secs = settings_get_show_seconds();
-  const bool is_24h = settings_get_time_format_24h();
+  const bool show_secs = settings_get_bool(SETTINGS_KEY_SHOW_SECS);
+  const bool is_24h = settings_get_bool(SETTINGS_KEY_TIME_FMT);
 
   bool light = ui_is_light_theme();
   lv_color_t digit_color = light ? lv_color_hex(0x333333) : lv_color_hex(0x01ddff);

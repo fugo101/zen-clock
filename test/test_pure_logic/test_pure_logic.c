@@ -4,12 +4,14 @@
 // `pio test -e native`.
 
 #include <stddef.h>
+#include <string.h>
 #include <unity.h>
 #include "ui_utils.h"
 #include "timezone_fmt.h"
 #include "backoff.h"
 #include "input_policy.h"
 #include "battery_view.h"
+#include "settings_table.h"
 
 void setUp(void)
 {
@@ -324,6 +326,97 @@ static void test_battery_clamp_starts_quiet_on_a_healthy_battery(void)
   TEST_ASSERT_FALSE(was_low);
 }
 
+// ---- settings_table ----------------------------------------------------------------------
+// The descriptor table is the single owner of every persisted setting's key, default and range.
+// These tests are the reason it is a pure translation unit with no nvs.h/esp_log.h.
+
+static void test_settings_desc_covers_every_key(void)
+{
+  TEST_ASSERT_NULL(settings_desc(SETTINGS_KEY_NONE));
+  TEST_ASSERT_NULL(settings_desc(SETTINGS_KEY_COUNT));
+  for (settings_key_t k = SETTINGS_KEY_NONE + 1; k < SETTINGS_KEY_COUNT; k++)
+  {
+    const settings_desc_t *d = settings_desc(k);
+    TEST_ASSERT_NOT_NULL(d);
+    TEST_ASSERT_NOT_NULL(d->nvs_key);
+    // NVS caps key names at 15 characters plus the NUL; a longer one fails at runtime only.
+    TEST_ASSERT_TRUE(d->nvs_key[0] != '\0');
+    TEST_ASSERT_TRUE(strlen(d->nvs_key) <= 15);
+    TEST_ASSERT_TRUE(d->min <= d->max);
+    // A default outside its own range would defeat clamp-on-read on a fresh device.
+    TEST_ASSERT_TRUE(d->def >= d->min && d->def <= d->max);
+  }
+}
+
+static void test_settings_clamp_brightness_floor_and_ceiling(void)
+{
+  // The ADR-0004 bug: a stored 0 left the panel unreadable with no way back to Settings.
+  TEST_ASSERT_EQUAL_INT(10, settings_clamp(SETTINGS_KEY_BRIGHTNESS, 0));
+  TEST_ASSERT_EQUAL_INT(100, settings_clamp(SETTINGS_KEY_BRIGHTNESS, 127));
+  TEST_ASSERT_EQUAL_INT(50, settings_clamp(SETTINGS_KEY_BRIGHTNESS, 50));
+}
+
+static void test_settings_clamp_timezone_boundaries(void)
+{
+  TEST_ASSERT_EQUAL_INT(-12, settings_clamp(SETTINGS_KEY_TZ_OFFSET, -13));
+  TEST_ASSERT_EQUAL_INT(-12, settings_clamp(SETTINGS_KEY_TZ_OFFSET, -12));
+  TEST_ASSERT_EQUAL_INT(14, settings_clamp(SETTINGS_KEY_TZ_OFFSET, 14));
+  TEST_ASSERT_EQUAL_INT(14, settings_clamp(SETTINGS_KEY_TZ_OFFSET, 15));
+  TEST_ASSERT_EQUAL_INT(7, settings_clamp(SETTINGS_KEY_TZ_OFFSET, 7));
+}
+
+static void test_settings_clamp_sleep_components(void)
+{
+  TEST_ASSERT_EQUAL_INT(23, settings_clamp(SETTINGS_KEY_SLEEP_H, 24));
+  TEST_ASSERT_EQUAL_INT(59, settings_clamp(SETTINGS_KEY_SLEEP_M, 60));
+  TEST_ASSERT_EQUAL_INT(59, settings_clamp(SETTINGS_KEY_SLEEP_S, 99));
+  TEST_ASSERT_EQUAL_INT(0, settings_clamp(SETTINGS_KEY_SLEEP_H, -1));
+}
+
+static void test_settings_clamp_booleans_are_zero_or_one(void)
+{
+  TEST_ASSERT_EQUAL_INT(1, settings_clamp(SETTINGS_KEY_THEME_LIGHT, 2));
+  TEST_ASSERT_EQUAL_INT(0, settings_clamp(SETTINGS_KEY_SHOW_SECS, -5));
+}
+
+static void test_settings_clamp_unknown_key_is_zero(void)
+{
+  TEST_ASSERT_EQUAL_INT(0, settings_clamp(SETTINGS_KEY_NONE, 42));
+  TEST_ASSERT_EQUAL_INT(0, settings_clamp(SETTINGS_KEY_COUNT, 42));
+}
+
+static void test_settings_option_index_respects_polarity(void)
+{
+  // Theme's option array is {Dark, Light}, so index == stored bool.
+  TEST_ASSERT_EQUAL_INT(0, settings_option_index(SETTINGS_KEY_THEME_LIGHT, 0));
+  TEST_ASSERT_EQUAL_INT(1, settings_option_index(SETTINGS_KEY_THEME_LIGHT, 1));
+  // Time Format's is {24H, 12H} and Show Secs' is {On, Off}: index is the inverse.
+  TEST_ASSERT_EQUAL_INT(0, settings_option_index(SETTINGS_KEY_TIME_FMT, 1));
+  TEST_ASSERT_EQUAL_INT(1, settings_option_index(SETTINGS_KEY_TIME_FMT, 0));
+  TEST_ASSERT_EQUAL_INT(0, settings_option_index(SETTINGS_KEY_SHOW_SECS, 1));
+  TEST_ASSERT_EQUAL_INT(1, settings_option_index(SETTINGS_KEY_SHOW_SECS, 0));
+}
+
+static void test_settings_option_index_is_involutive(void)
+{
+  // The same call converts both ways, which is why load and persist can share one mapping
+  // instead of the two hand-written inversions that used to drift apart.
+  for (settings_key_t k = SETTINGS_KEY_NONE + 1; k < SETTINGS_KEY_COUNT; k++)
+  {
+    for (int v = 0; v <= 1; v++)
+    {
+      TEST_ASSERT_EQUAL_INT(v, settings_option_index(k, settings_option_index(k, v)));
+    }
+  }
+}
+
+static void test_settings_sleep_seconds_sums_components(void)
+{
+  TEST_ASSERT_EQUAL_UINT32(0, settings_sleep_seconds(0, 0, 0));
+  TEST_ASSERT_EQUAL_UINT32(3600, settings_sleep_seconds(1, 0, 0));
+  TEST_ASSERT_EQUAL_UINT32(86399, settings_sleep_seconds(23, 59, 59));
+}
+
 int main(void)
 {
   UNITY_BEGIN();
@@ -360,5 +453,14 @@ int main(void)
   RUN_TEST(test_battery_clamp_releases_on_usb);
   RUN_TEST(test_battery_clamp_releases_when_the_reading_is_lost);
   RUN_TEST(test_battery_clamp_starts_quiet_on_a_healthy_battery);
+  RUN_TEST(test_settings_desc_covers_every_key);
+  RUN_TEST(test_settings_clamp_brightness_floor_and_ceiling);
+  RUN_TEST(test_settings_clamp_timezone_boundaries);
+  RUN_TEST(test_settings_clamp_sleep_components);
+  RUN_TEST(test_settings_clamp_booleans_are_zero_or_one);
+  RUN_TEST(test_settings_clamp_unknown_key_is_zero);
+  RUN_TEST(test_settings_option_index_respects_polarity);
+  RUN_TEST(test_settings_option_index_is_involutive);
+  RUN_TEST(test_settings_sleep_seconds_sums_components);
   return UNITY_END();
 }

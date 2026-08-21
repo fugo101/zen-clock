@@ -1,36 +1,15 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
+
+#include "settings_table.h"
 
 #ifdef __cplusplus
 extern "C"
 {
 #endif
-
-/**
- * @brief Lowest brightness the device will ever apply or store, in percent.
- *
- * The backlight is the only way to read the settings screen, so 0% is not a valid setting —
- * it hides the control needed to undo it. Enforced on both read and write in settings.c, and
- * used as the `.min` of the Brightness item in the UI so the two cannot drift apart.
- */
-#define SETTINGS_BRIGHTNESS_MIN 10
-
-/**
- * @brief Inclusive bounds of the stored timezone offset, in whole hours from UTC.
- *
- * Spans the real-world range (UTC−12 at Baker Island through UTC+14 at Line Islands). Whole
- * hours only — see ADR-0004 for why half-hour zones are out of scope.
- *
- * Enforced on both read and write in settings.c, and used as the `.min`/`.max` of the Timezone
- * item in the UI so the stored range and the edit range cannot drift apart. Read-clamping is
- * what recovers a device that already has an out-of-range value on flash: `timezone_fmt()`
- * would otherwise hand `setenv("TZ", ...)` a nonsense offset and the clock would show a time
- * no user could explain or correct from the Settings screen.
- */
-#define SETTINGS_TZ_MIN (-12)
-#define SETTINGS_TZ_MAX 14
 
   /**
    * @brief Initialize the NVS flash.
@@ -42,95 +21,28 @@ extern "C"
   void settings_init(void);
 
   /**
-   * @brief Get the stored theme configuration.
-   * @return true if light theme, false if dark theme (default).
+   * @brief Read one setting from NVS.
+   *
+   * Returns the descriptor's default when the key is absent, when NVS cannot be opened, or when
+   * the stored value has a different NVS type than the one this build writes. The result is
+   * always clamped into the descriptor's range — a value outside it, stored by an earlier build,
+   * is corrected on the way out and logged, so whatever wrote it stays findable (ADR-0004).
    */
-  bool settings_get_theme_light(void);
+  int8_t settings_get(settings_key_t key);
+
+  /** @brief Read a boolean setting. Convenience over settings_get() != 0. */
+  bool settings_get_bool(settings_key_t key);
 
   /**
-   * @brief Store the theme configuration to NVS.
-   * @param is_light true for light theme, false for dark theme.
+   * @brief Clamp a value into its setting's range and write it to NVS.
+   *
+   * A failed write is logged and swallowed — an unwritable settings partition must not take the
+   * clock down with it.
    */
-  void settings_set_theme_light(bool is_light);
+  void settings_set(settings_key_t key, int val);
 
-  /**
-   * @brief Get the stored brightness percentage.
-   * @return Brightness SETTINGS_BRIGHTNESS_MIN–100 (default: 100 if not set). A lower value
-   *         stored by an older build is clamped up, so the screen can always be read.
-   */
-  uint8_t settings_get_brightness(void);
-
-  /**
-   * @brief Store brightness percentage to NVS.
-   * @param percent Brightness, clamped into SETTINGS_BRIGHTNESS_MIN–100.
-   */
-  void settings_set_brightness(uint8_t percent);
-
-  /**
-   * @brief Get auto-sleep timeout hours (0–23). Default 0.
-   */
-  uint8_t settings_get_sleep_h(void);
-
-  /**
-   * @brief Store auto-sleep timeout hours to NVS.
-   * @param h Hours 0–23 (clamped if exceeds 23).
-   */
-  void settings_set_sleep_h(uint8_t h);
-
-  /**
-   * @brief Get auto-sleep timeout minutes (0–59). Default 0.
-   */
-  uint8_t settings_get_sleep_m(void);
-
-  /**
-   * @brief Store auto-sleep timeout minutes to NVS.
-   * @param m Minutes 0–59 (clamped if exceeds 59).
-   */
-  void settings_set_sleep_m(uint8_t m);
-
-  /**
-   * @brief Get auto-sleep timeout seconds (0–59). Default 0.
-   */
-  uint8_t settings_get_sleep_s(void);
-
-  /**
-   * @brief Store auto-sleep timeout seconds to NVS.
-   * @param s Seconds 0–59 (clamped if exceeds 59).
-   */
-  void settings_set_sleep_s(uint8_t s);
-
-  /**
-   * @brief Get time format. true = 24H (default), false = 12H.
-   */
-  bool settings_get_time_format_24h(void);
-
-  /**
-   * @brief Store time format to NVS.
-   */
-  void settings_set_time_format_24h(bool is_24h);
-
-  /**
-   * @brief Get show-seconds setting. true = show (default), false = hide.
-   */
-  bool settings_get_show_seconds(void);
-
-  /**
-   * @brief Store show-seconds setting to NVS.
-   */
-  void settings_set_show_seconds(bool show);
-
-  /**
-   * @brief Get timezone UTC offset. Default 7 (UTC+7).
-   * @return Offset SETTINGS_TZ_MIN..SETTINGS_TZ_MAX. A value outside that range stored by an
-   *         older build is clamped into it, so the clock can never show an unexplainable time.
-   */
-  int8_t settings_get_timezone_offset(void);
-
-  /**
-   * @brief Store timezone UTC offset to NVS.
-   * @param offset Offset, clamped into SETTINGS_TZ_MIN..SETTINGS_TZ_MAX.
-   */
-  void settings_set_timezone_offset(int8_t offset);
+  /** @brief Total stored auto-sleep timeout in seconds. */
+  uint32_t settings_get_sleep_seconds(void);
 
   /**
    * @brief Apply timezone offset to the system (setenv + tzset).

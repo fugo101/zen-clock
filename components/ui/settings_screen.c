@@ -111,10 +111,12 @@ static void apply_scroll(void)
 // ============================================================
 // Sleep timeout — compute total seconds from working values
 // ============================================================
+// Reads the working copies, not NVS: the write is debounced by NVS_FLUSH_DELAY_MS, so reading
+// back from flash here would use the value the user just replaced.
 static uint32_t compute_sleep_s(void)
 {
-  return (uint32_t) s_items[SETTINGS_ROW_SLEEP_H].value * 3600 + (uint32_t) s_items[SETTINGS_ROW_SLEEP_M].value * 60 +
-         (uint32_t) s_items[SETTINGS_ROW_SLEEP_S].value;
+  return settings_sleep_seconds(s_items[SETTINGS_ROW_SLEEP_H].value, s_items[SETTINGS_ROW_SLEEP_M].value,
+                                s_items[SETTINGS_ROW_SLEEP_S].value);
 }
 
 // ============================================================
@@ -246,7 +248,7 @@ static void hide_edit_box(void)
 // ============================================================
 // Apply value changes — live preview now, NVS write coalesced
 // ============================================================
-// Each settings_set_*() is a complete nvs_open/set/commit/close cycle, i.e. a blocking flash
+// Each settings_set() is a complete nvs_open/set/commit/close cycle, i.e. a blocking flash
 // erase-write. Holding UP on Brightness for two seconds used to trigger about eleven of them,
 // all on the LVGL task. The live effect still fires on every single press — only the write is
 // deferred, so the screen stays as responsive as before while the flash sees one write instead.
@@ -290,39 +292,33 @@ static void persist_item(const int index)
 {
   const setting_item_t *item = &s_items[index];
 
+  // settings_set() clamps, writes and logs "<nvs_key> = <value>" itself, so the eight
+  // per-row ESP_LOGI formats this switch used to carry are gone.
   switch (index)
   {
   case SETTINGS_ROW_THEME:
-    settings_set_theme_light(item->value == 1);
-    ESP_LOGI(tag, "Theme -> %s", item->value == 1 ? "Light" : "Dark");
+    settings_set(SETTINGS_KEY_THEME_LIGHT, settings_option_index(SETTINGS_KEY_THEME_LIGHT, item->value));
     break;
   case SETTINGS_ROW_BRIGHTNESS:
-    settings_set_brightness((uint8_t) item->value);
-    ESP_LOGI(tag, "Brightness -> %d%%", item->value);
+    settings_set(SETTINGS_KEY_BRIGHTNESS, item->value);
     break;
   case SETTINGS_ROW_TIME_FORMAT:
-    settings_set_time_format_24h(item->value == 0);
-    ESP_LOGI(tag, "Time Format -> %s", item->value == 0 ? "24H" : "12H");
+    settings_set(SETTINGS_KEY_TIME_FMT, settings_option_index(SETTINGS_KEY_TIME_FMT, item->value));
     break;
   case SETTINGS_ROW_SHOW_SECS:
-    settings_set_show_seconds(item->value == 0);
-    ESP_LOGI(tag, "Show Seconds -> %s", item->value == 0 ? "On" : "Off");
+    settings_set(SETTINGS_KEY_SHOW_SECS, settings_option_index(SETTINGS_KEY_SHOW_SECS, item->value));
     break;
   case SETTINGS_ROW_TIMEZONE:
-    settings_set_timezone_offset((int8_t) item->value);
-    ESP_LOGI(tag, "Timezone -> UTC%+d", item->value);
+    settings_set(SETTINGS_KEY_TZ_OFFSET, item->value);
     break;
   case SETTINGS_ROW_SLEEP_H:
-    settings_set_sleep_h((uint8_t) item->value);
-    ESP_LOGI(tag, "Sleep H -> %d", item->value);
+    settings_set(SETTINGS_KEY_SLEEP_H, item->value);
     break;
   case SETTINGS_ROW_SLEEP_M:
-    settings_set_sleep_m((uint8_t) item->value);
-    ESP_LOGI(tag, "Sleep M -> %d", item->value);
+    settings_set(SETTINGS_KEY_SLEEP_M, item->value);
     break;
   case SETTINGS_ROW_SLEEP_S:
-    settings_set_sleep_s((uint8_t) item->value);
-    ESP_LOGI(tag, "Sleep S -> %d", item->value);
+    settings_set(SETTINGS_KEY_SLEEP_S, item->value);
     break;
   default:
     break;
@@ -398,14 +394,19 @@ void settings_screen_create(lv_obj_t *parent)
   flush_pending();
 
   // Load current values from NVS
-  s_items[SETTINGS_ROW_THEME].value = settings_get_theme_light() ? 1 : 0;
-  s_items[SETTINGS_ROW_BRIGHTNESS].value = (int) settings_get_brightness();
-  s_items[SETTINGS_ROW_TIME_FORMAT].value = settings_get_time_format_24h() ? 0 : 1;
-  s_items[SETTINGS_ROW_SHOW_SECS].value = settings_get_show_seconds() ? 0 : 1;
-  s_items[SETTINGS_ROW_TIMEZONE].value = (int) settings_get_timezone_offset();
-  s_items[SETTINGS_ROW_SLEEP_H].value = (int) settings_get_sleep_h();
-  s_items[SETTINGS_ROW_SLEEP_M].value = (int) settings_get_sleep_m();
-  s_items[SETTINGS_ROW_SLEEP_S].value = (int) settings_get_sleep_s();
+  // settings_option_index() is involutive, so the same call that turns a stored bool into an
+  // option index below turns it back in persist_item() — the two inversions can no longer drift.
+  s_items[SETTINGS_ROW_THEME].value =
+      settings_option_index(SETTINGS_KEY_THEME_LIGHT, settings_get_bool(SETTINGS_KEY_THEME_LIGHT));
+  s_items[SETTINGS_ROW_BRIGHTNESS].value = settings_get(SETTINGS_KEY_BRIGHTNESS);
+  s_items[SETTINGS_ROW_TIME_FORMAT].value =
+      settings_option_index(SETTINGS_KEY_TIME_FMT, settings_get_bool(SETTINGS_KEY_TIME_FMT));
+  s_items[SETTINGS_ROW_SHOW_SECS].value =
+      settings_option_index(SETTINGS_KEY_SHOW_SECS, settings_get_bool(SETTINGS_KEY_SHOW_SECS));
+  s_items[SETTINGS_ROW_TIMEZONE].value = settings_get(SETTINGS_KEY_TZ_OFFSET);
+  s_items[SETTINGS_ROW_SLEEP_H].value = settings_get(SETTINGS_KEY_SLEEP_H);
+  s_items[SETTINGS_ROW_SLEEP_M].value = settings_get(SETTINGS_KEY_SLEEP_M);
+  s_items[SETTINGS_ROW_SLEEP_S].value = settings_get(SETTINGS_KEY_SLEEP_S);
 
   // Title
   lv_obj_t *title = lv_label_create(parent);

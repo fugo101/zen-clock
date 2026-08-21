@@ -120,7 +120,7 @@ mid-action now always lands instead of being silently dropped.
 | `components/ui/`               | LVGL UI — modular widgets, see below                                                                                                                                                                                       |
 | `components/wifi_manager/`     | WiFi state machine: IDLE → SCANNING → CONNECTING → VERIFYING → CONNECTED                                                                                                                                                   |
 | `components/ble_provisioning/` | BLE WiFi provisioning via `espressif/network_provisioning`                                                                                                                                                                 |
-| `components/settings/`         | NVS-backed settings: theme, brightness, sleep timeout (H/M/S), time format (24h/12h), show-seconds, timezone offset                                                                                                        |
+| `components/settings/`         | NVS-backed settings behind a 7-symbol API (`settings_get/get_bool/set` + `settings_key_t`). `settings_table.c` is the descriptor table — NVS key, default, range and boolean polarity for all 8 settings — and is pure, so it builds for the host-side `[env:native]` tests; symlinked into `test/test_pure_logic/`. See ADR-0006 |
 | `components/sntp_sync/`        | NTP time synchronization; skips initial sync on deep-sleep wake if recently synced                                                                                                                                         |
 | `components/deep_sleep/`       | Auto-sleep timer (inactivity) + manual trigger + ext1 wakeup on GPIO0/GPIO14. Cancellable during the fade; declines while an inhibit callback says so. Cuts the LCD rail and latches it — see the hold/release warning below |
 | `components/lcd_backlight/`    | LCD backlight driver via LEDC PWM                                                                                                                                                                                          |
@@ -297,13 +297,19 @@ CONFIG_LV_USE_QRCODE=y                        # LVGL QR widget, off by default
 
 ## Timezone
 
-User-configurable, not hardcoded. `settings_get_timezone_offset()` reads an `int8_t` UTC offset
-from NVS (default `+7`), editable live at Settings → Clock → Timezone (RANGE, −12..+14).
-`app_main` applies the stored offset at boot via `settings_apply_timezone()` (`src/main.c`), which
-builds the POSIX TZ string with `timezone_fmt()` — sign-inversion convention, so UTC+7 becomes
-`TZ="UTC-7"` — then calls `setenv("TZ", ...)` + `tzset()`. `timezone_fmt()` lives in
-`components/settings/timezone_fmt.c`, split out from `settings.c` specifically so it can build for
-the host-side `[env:native]` tests (`settings.c` itself pulls in `esp_log.h`/`nvs.h` and can't).
+User-configurable, not hardcoded. `settings_get(SETTINGS_KEY_TZ_OFFSET)` reads an `int8_t` UTC
+offset from NVS (default `+7`), editable live at Settings → Clock → Timezone (RANGE, −12..+14 —
+the bounds come from `SETTINGS_TZ_MIN`/`SETTINGS_TZ_MAX` in `settings_table.h`, shared with the
+descriptor's `.min`/`.max` and the UI row so they can't drift). `app_main` applies the stored
+offset at boot via `settings_apply_timezone()` (`src/main.c`), which builds the POSIX TZ string
+with `timezone_fmt()` — sign-inversion convention, so UTC+7 becomes `TZ="UTC-7"` — then calls
+`setenv("TZ", ...)` + `tzset()`. `timezone_fmt()` lives in `components/settings/timezone_fmt.c`,
+split out from `settings.c` specifically so it can build for the host-side `[env:native]` tests
+(`settings.c` itself pulls in `esp_log.h`/`nvs.h` and can't).
+
+`settings_apply_timezone()` clamps its argument as well: it is public and is the only function
+that actually reaches `setenv()`, so an out-of-range offset there would build a TZ string newlib
+silently falls back to UTC from.
 
 ## Dependencies
 

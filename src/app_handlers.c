@@ -169,7 +169,7 @@ static void ts_poll_cb(void *arg)
 // Battery policy — status_bar owns the ADC poll, this owns what to do with it
 // ============================================================
 
-// Ceiling applied while the battery is low. Not written to NVS: settings_get_brightness() still
+// Ceiling applied while the battery is low. Not written to NVS: the stored brightness still
 // holds what the user actually chose, and that is what gets restored once the battery recovers
 // or USB is plugged back in.
 #define BATT_LOW_BRIGHTNESS 30
@@ -198,7 +198,7 @@ static void on_battery_reading(const battery_view_t view)
   }
   case BATTERY_CLAMP_OFF:
     ESP_LOGI(tag, "Battery recovered — restoring brightness");
-    bsp_display_set_brightness(settings_get_brightness(), 500);
+    bsp_display_set_brightness((uint8_t) settings_get(SETTINGS_KEY_BRIGHTNESS), 500);
     break;
   case BATTERY_CLAMP_NONE:
     break; // no default: let -Wswitch flag a new action instead of silently ignoring it
