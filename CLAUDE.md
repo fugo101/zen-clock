@@ -93,15 +93,33 @@ All event callbacks and nav wiring live here:
 | Symbol                                  | Role                                                                                                                     |
 |-----------------------------------------|--------------------------------------------------------------------------------------------------------------------------|
 | `on_button_press`                       | Adapter over `input_policy` — samples the other button's pin, decides, reads QR visibility only for a NAV outcome, dispatches |
-| `on_wifi_event`                         | WiFi manager state machine transitions; calls `microlink_init/start` on first CONNECTED, `microlink_rebind` on reconnect |
+| `on_wifi_event`                         | WiFi manager state machine transitions. Publishes the link state and returns — on CONNECTED it notifies `net_worker` rather than starting NTP or Tailscale inline |
 | `on_ble_prov_event`                     | BLE provisioning lifecycle events                                                                                        |
 | `on_sntp_sync`                          | NTP sync status updates                                                                                                  |
 | `on_battery_reading`                    | Registered via `status_bar_register_battery_cb()`; a `switch` over `battery_clamp_step()`, which owns the not-low→low edge rule. Clamps brightness to `BATT_LOW_BRIGHTNESS` on the edge (not level-triggered), restores it on recovery. Never fires on USB power, never writes NVS |
 | `app_handlers_register_nav_callbacks()` | Wires `do_reset_wifi`, `do_sleep_now`, `do_ntp_resync` and `do_provisioning` into nav system — called once at boot            |
 
+**The WiFi icon is derived, not published twice.** Two tasks own two fields — the wifi task moves
+the link status, the SNTP task clears the no-internet flag when a sync proves the internet works —
+and each writes only its own field before calling `publish_wifi_icon()`, which derives the icon from
+both under a spinlock. Publishing the icon directly from both tasks was a real race: WiFi drops, the
+wifi task publishes `DISCONNECTED`, and an in-flight NTP response that read the flag a moment
+earlier publishes `CONNECTED` over the top — solid green on a dead link until the backoff reconnect
+fires, up to five minutes later.
+
 `on_wifi_event` starts BLE provisioning **only** on `NO_CRED`. `NO_MATCH`, `ALL_FAILED` and
 `DISCONNECTED` schedule a reconnect instead (30s doubling to 5min) — losing coverage must never drop the device into
 provisioning, and a retry must always stay armed.
+
+**Worker task (`net_worker`):** NTP start/notify and `microlink_init/start/rebind` run here, not on
+the wifi task. `on_wifi_event()` runs synchronously inside `fire_event()`, so anything it does
+inline is time `wifi_manager_stop()` cannot interrupt — the connect path used to block it for
+seconds, which meant a concurrent stop burned its whole `STOP_TIMEOUT_MS` and returned
+`ESP_ERR_TIMEOUT` while the caller handed the radio to BLE anyway. Deliberately **not** `btn_worker`:
+that queue carries `do_reset_wifi()`, which calls `wifi_manager_stop()` — putting the thing being
+stopped behind the thing that stops it on one serialized queue reintroduces the same stall a layer
+up. The wake is a single task notification, so a connect/drop/connect burst collapses into one
+pass, and a pass that finds the link already down does nothing.
 
 **Worker task (`btn_worker`):** deferred nav work (`do_reset_wifi`, `dismiss_provisioning`, and the
 callback `nav_handle_action()` returns) runs on a dedicated FreeRTOS task, not inline in

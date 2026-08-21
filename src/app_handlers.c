@@ -42,11 +42,74 @@ static uint32_t s_reconnect_backoff_s = BACKOFF_START_S;
 
 static bool s_sntp_started = false;
 
-// True while WiFi is associated but the DNS probe failed. Kept here rather than queried from the
-// status bar so the recovery rule lives next to the events that drive it.
-static bool s_wifi_unverified = false;
+// ============================================================
+// Published link state
+//
+// Two writers on two tasks: the wifi task moves s_link_status, the SNTP task clears
+// s_unverified when a successful sync proves the internet works. Neither may publish the icon
+// directly. on_sntp_sync() used to, and the interleaving was real: WiFi drops, the wifi task
+// publishes DISCONNECTED, and an in-flight NTP response that read s_unverified a moment earlier
+// then publishes CONNECTED over the top — a solid green icon on a dead link until the backoff
+// reconnect fires, up to five minutes later.
+//
+// So each task writes only the field it owns through set_link()/set_unverified(), which derive the
+// icon from both and publish it — all inside one critical section. The SNTP task's recovery can no
+// longer contradict a link state it does not own: with s_link_status already DISCONNECTED, the
+// derivation says DISCONNECTED no matter what the flag says.
+//
+// The publish is inside the section, not after it. Deriving under the lock and storing outside
+// only narrows the race: the SNTP task could derive CONNECTED, be descheduled before its store,
+// let the wifi task derive and store DISCONNECTED, then resume and store CONNECTED over the top —
+// green on a dead link, permanently, since DISCONNECTED is terminal with no follow-up event.
+// status_bar_set_wifi_status() is a single volatile store and cannot block, so holding the
+// spinlock across it is safe.
+// ============================================================
+static portMUX_TYPE s_link_mux = portMUX_INITIALIZER_UNLOCKED;
+static wifi_status_t s_link_status = WIFI_STATUS_DISCONNECTED;
+static bool s_unverified = false; // associated, but the DNS probe failed
 
-// Written once by the wifi_mgr task; read by the esp_timer task in ts_poll_cb(). No lock:
+// Field write and publish share one critical section for the same reason — two sections would let
+// the other writer land between them. clear_unverified exists so the two transitions that change
+// both fields do it atomically: clearing the flag first would publish a green CONNECTED derived
+// from the link state it is about to leave.
+static void set_link(const wifi_status_t status, const bool clear_unverified)
+{
+  portENTER_CRITICAL(&s_link_mux);
+  s_link_status = status;
+  if (clear_unverified)
+  {
+    s_unverified = false;
+  }
+  const wifi_status_t icon =
+      (s_link_status == WIFI_STATUS_CONNECTED && s_unverified) ? WIFI_STATUS_NO_INTERNET : s_link_status;
+  status_bar_set_wifi_status(icon);
+  portEXIT_CRITICAL(&s_link_mux);
+}
+
+static void set_link_status(const wifi_status_t status)
+{
+  set_link(status, false);
+}
+
+static void set_unverified(const bool unverified)
+{
+  portENTER_CRITICAL(&s_link_mux);
+  s_unverified = unverified;
+  const wifi_status_t icon =
+      (s_link_status == WIFI_STATUS_CONNECTED && s_unverified) ? WIFI_STATUS_NO_INTERNET : s_link_status;
+  status_bar_set_wifi_status(icon);
+  portEXIT_CRITICAL(&s_link_mux);
+}
+
+static bool link_unverified(void)
+{
+  portENTER_CRITICAL(&s_link_mux);
+  const bool unverified = s_unverified;
+  portEXIT_CRITICAL(&s_link_mux);
+  return unverified;
+}
+
+// Written once by net_worker in start_tailscale(); read by the esp_timer task in ts_poll_cb(). No lock:
 // the ts_poll timer is only armed *after* the assignment below, so a reader can never
 // observe the pre-init value, and the rebind path does not reassign it. volatile keeps the
 // compiler from caching the pointer across the two task contexts.
@@ -150,6 +213,174 @@ static void ts_poll_cb(void *arg)
   // shared esp_timer task, so blocking would also stall inactivity_cb (deep sleep) and
   // reconnect_timer_cb (WiFi retry).
   status_bar_set_ts_status(ts);
+}
+
+// MicroLink runs if a key was configured at build time, or if a previous session left credentials
+// in NVS. Written as one predicate rather than inline: CONFIG_ML_TAILSCALE_AUTH_KEY is empty in
+// the checked-in sdkconfig, so an inline `KEY[0] == '\0' && ...` folds to a constant and reads as
+// a redundant operand — yet it is the decisive one in any build that sets a key via menuconfig,
+// where it must short-circuit so MicroLink starts.
+static bool microlink_configured(void)
+{
+  const char *const auth_key = CONFIG_ML_TAILSCALE_AUTH_KEY;
+  return auth_key[0] != '\0' || microlink_has_stored_credentials();
+}
+
+// ============================================================
+// Network worker
+//
+// on_wifi_event() runs synchronously on the wifi task, from inside fire_event(). Anything it does
+// inline is time wifi_manager_stop() cannot interrupt: get_state() reads CONNECTED and
+// s_task_parked is false throughout, so a concurrent stop — do_reset_wifi() on btn_worker, say —
+// burns its whole STOP_TIMEOUT_MS and returns ESP_ERR_TIMEOUT, after which
+// stop_provisioning_for_ble() hands the radio to BLE anyway.
+//
+// The connect path used to do three unbounded things there: sntp_sync_start() (500 ms delay),
+// microlink_init()+start() (Tailscale registration, DERP, WireGuard handshake — seconds), and
+// microlink_rebind(). ADR-0002 rejected a periodic DNS re-probe for exactly this reason and then
+// the application layer blocked the same task on the same path for far longer. That is the
+// contradiction #84 exists to settle.
+//
+// So the handler publishes and returns, and this task reconciles. It is deliberately NOT
+// btn_worker: that queue carries do_reset_wifi(), which calls wifi_manager_stop() — putting the
+// thing being stopped behind the thing that stops it on one serialized queue would reintroduce
+// the same stall one layer up.
+//
+// The wake is a single task notification, not a queue of events: the worker always reads the
+// latest published link state, so a connect/drop/connect burst collapses into one pass instead of
+// queueing three. A job that finds the link already down does nothing, which is the whole point of
+// reconciling against state rather than replaying events.
+// ============================================================
+#define NET_WORKER_STACK    8192
+#define NET_WORKER_PRIORITY 2 // same band as btn_worker: below the button poll, above idle
+
+static TaskHandle_t s_net_worker_task = NULL;
+
+static bool link_is_up(void)
+{
+  portENTER_CRITICAL(&s_link_mux);
+  const bool up = (s_link_status == WIFI_STATUS_CONNECTED);
+  portEXIT_CRITICAL(&s_link_mux);
+  return up;
+}
+
+// clang-tidy scores this at 85, all of it ESP_LOG* macro expansion; the function is a first-time
+// branch, a rebind branch, and a timer that is created once.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+static void start_tailscale(void)
+{
+  if (!microlink_configured())
+  {
+    ESP_LOGI(tag, "No Tailscale auth key and no stored session — skipping MicroLink");
+    return;
+  }
+
+  if (s_ml)
+  {
+    microlink_rebind(s_ml);
+    device_info_screen_set_ml(s_ml);
+    return;
+  }
+
+  const char *dev_name = (CONFIG_ML_DEVICE_NAME[0] != '\0') ? CONFIG_ML_DEVICE_NAME : microlink_default_device_name();
+  microlink_config_t ml_cfg = {
+      .auth_key = CONFIG_ML_TAILSCALE_AUTH_KEY,
+      .device_name = dev_name,
+      .enable_derp = true,
+      .enable_stun = true,
+      .enable_disco = true,
+      .max_peers = CONFIG_ML_MAX_PEERS,
+  };
+  s_ml = microlink_init(&ml_cfg);
+  if (!s_ml)
+  {
+    ESP_LOGE(tag, "microlink_init failed");
+    return;
+  }
+
+  microlink_start(s_ml);
+  device_info_screen_set_ml(s_ml);
+
+  if (!s_ts_poll_timer)
+  {
+    const esp_timer_create_args_t ts_args = {.callback = ts_poll_cb, .name = "ts_poll"};
+    const esp_err_t tret = esp_timer_create(&ts_args, &s_ts_poll_timer);
+    if (tret != ESP_OK)
+    {
+      ESP_LOGE(tag, "esp_timer_create(ts_poll) failed: %s — Tailscale icon will not update", esp_err_to_name(tret));
+      s_ts_poll_timer = NULL;
+    }
+  }
+  if (s_ts_poll_timer)
+  {
+    esp_timer_start_periodic(s_ts_poll_timer, TS_POLL_PERIOD_US);
+  }
+}
+
+// Same story: the score is ESP_LOG* expansion around a wait, a staleness check and two calls.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+static void net_worker_task(void *arg) // NOLINT(readability-non-const-parameter)
+{
+  (void) arg;
+  for (;;) // NOLINT
+  {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+    // Re-read rather than trust the notification: by the time this runs the link may already be
+    // gone, and bringing NTP and Tailscale up against a dead link would just block this task
+    // until they time out.
+    if (!link_is_up())
+    {
+      ESP_LOGI(tag, "Link already down when the worker ran — nothing to bring up");
+      continue;
+    }
+
+    if (!s_sntp_started)
+    {
+      ESP_LOGI(tag, "WiFi verified online — starting NTP sync...");
+      // Latched only on success. sntp_sync_start() can fail with no task created, and every later
+      // reconnect would then take the notify path, which returns immediately when there is no
+      // task — NTP dead for the rest of the boot with nothing left to retry it.
+      const esp_err_t sret = sntp_sync_start(on_sntp_sync);
+      if (sret == ESP_OK)
+      {
+        s_sntp_started = true;
+      }
+      else
+      {
+        ESP_LOGE(tag, "sntp_sync_start failed: %s — retrying on next connect", esp_err_to_name(sret));
+      }
+    }
+    else
+    {
+      ESP_LOGI(tag, "WiFi reconnected — notifying SNTP");
+      sntp_sync_notify_connected();
+    }
+
+    start_tailscale();
+  }
+}
+
+static void net_worker_init(void)
+{
+  if (xTaskCreate(net_worker_task, "net_worker", NET_WORKER_STACK, NULL, NET_WORKER_PRIORITY, &s_net_worker_task) !=
+      pdPASS)
+  {
+    ESP_LOGE(tag, "Failed to create network worker task — NTP and Tailscale will not start");
+    s_net_worker_task = NULL;
+  }
+}
+
+// Wakes the worker. Never blocks and never fails loudly: the notification is a "look again", not
+// a message, so a wake arriving while the worker is mid-pass is coalesced by design.
+static void net_worker_notify(void)
+{
+  if (!s_net_worker_task)
+  {
+    ESP_LOGW(tag, "No network worker — skipping NTP/Tailscale bring-up");
+    return;
+  }
+  xTaskNotifyGive(s_net_worker_task);
 }
 
 // ============================================================
@@ -379,6 +610,7 @@ void app_handlers_register_nav_callbacks(void)
   deep_sleep_register_inhibit_cb(provisioning_in_progress);
   status_bar_register_battery_cb(on_battery_reading);
   btn_worker_init();
+  net_worker_init();
 }
 
 // ============================================================
@@ -487,11 +719,10 @@ void on_sntp_sync(const sntp_sync_event_t event)
     // into, or the upstream came back. Cheaper and safer than re-probing from the WiFi task,
     // which would mean an unbounded getaddrinfo() inside a state wifi_manager_stop() must be
     // able to interrupt.
-    if (s_wifi_unverified)
+    if (link_unverified())
     {
       ESP_LOGI(tag, "Internet confirmed by NTP — clearing no-internet state");
-      s_wifi_unverified = false;
-      status_bar_set_wifi_status(WIFI_STATUS_CONNECTED);
+      set_unverified(false);
     }
     break;
 
@@ -518,7 +749,11 @@ void on_ble_prov_event(const ble_prov_event_t event, const char *ssid, const cha
     ble_provisioning_get_device_name(dev_name, sizeof(dev_name));
     ble_provisioning_get_password(prov_pass, sizeof(prov_pass));
     ESP_LOGI(tag, "BLE provisioning active: %s", dev_name);
-    status_bar_set_wifi_status(WIFI_STATUS_PROVISIONING);
+    // set_link_status(), not a bare publish: WiFi has been stopped and the radio handed to BLE, so
+    // this *is* the link state now. Publishing the icon alone would leave s_link_status holding
+    // the pre-provisioning value, and the next publish — an in-flight NTP response clearing the
+    // no-internet flag, say — would repaint "online" over the QR screen.
+    set_link_status(WIFI_STATUS_PROVISIONING);
     prov_screen_show(dev_name, prov_pass);
     break;
   }
@@ -578,109 +813,41 @@ void on_ble_prov_event(const ble_prov_event_t event, const char *ssid, const cha
 // WiFi event callback
 // ============================================================
 
-// MicroLink runs if a key was configured at build time, or if a previous session left credentials
-// in NVS. Written as one predicate rather than inline: CONFIG_ML_TAILSCALE_AUTH_KEY is empty in
-// the checked-in sdkconfig, so an inline `KEY[0] == '\0' && ...` folds to a constant and reads as
-// a redundant operand — yet it is the decisive one in any build that sets a key via menuconfig,
-// where it must short-circuit so MicroLink starts.
-static bool microlink_configured(void)
-{
-  const char *const auth_key = CONFIG_ML_TAILSCALE_AUTH_KEY;
-  return auth_key[0] != '\0' || microlink_has_stored_credentials();
-}
-
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void on_wifi_event(const wifi_manager_event_t event)
 {
   switch (event)
   {
   case WIFI_MGR_SCANNING:
-    status_bar_set_wifi_status(WIFI_STATUS_SCANNING);
+    set_link_status(WIFI_STATUS_SCANNING);
     break;
 
   case WIFI_MGR_CONNECTING:
-    status_bar_set_wifi_status(WIFI_STATUS_CONNECTING);
+    set_link_status(WIFI_STATUS_CONNECTING);
     break;
 
   case WIFI_MGR_GOT_IP:
     ESP_LOGI(tag, "WiFi got IP — verifying internet...");
-    status_bar_set_wifi_status(WIFI_STATUS_VERIFYING);
+    set_link_status(WIFI_STATUS_VERIFYING);
     break;
 
   case WIFI_MGR_CONNECTED:
     cancel_reconnect();
-    // Cleared before publishing: a later connection to a working network must not inherit the
-    // flag from an earlier one. WIFI_MGR_NO_INTERNET, if it comes, arrives immediately after
-    // this and publishes over the green.
-    s_wifi_unverified = false;
-    status_bar_set_wifi_status(WIFI_STATUS_CONNECTED);
-    if (!s_sntp_started)
-    {
-      ESP_LOGI(tag, "WiFi verified online — starting NTP sync...");
-      sntp_sync_start(on_sntp_sync);
-      s_sntp_started = true;
-    }
-    else
-    {
-      ESP_LOGI(tag, "WiFi reconnected — notifying SNTP");
-      sntp_sync_notify_connected();
-    }
-    if (!microlink_configured())
-    {
-      ESP_LOGI(tag, "No Tailscale auth key and no stored session — skipping MicroLink");
-    }
-    else if (s_ml == NULL)
-    {
-      const char *dev_name =
-          (CONFIG_ML_DEVICE_NAME[0] != '\0') ? CONFIG_ML_DEVICE_NAME : microlink_default_device_name();
-      microlink_config_t ml_cfg = {
-          .auth_key = CONFIG_ML_TAILSCALE_AUTH_KEY,
-          .device_name = dev_name,
-          .enable_derp = true,
-          .enable_stun = true,
-          .enable_disco = true,
-          .max_peers = CONFIG_ML_MAX_PEERS,
-      };
-      s_ml = microlink_init(&ml_cfg);
-      if (s_ml)
-      {
-        microlink_start(s_ml);
-        device_info_screen_set_ml(s_ml);
-        if (!s_ts_poll_timer)
-        {
-          const esp_timer_create_args_t ts_args = {.callback = ts_poll_cb, .name = "ts_poll"};
-          const esp_err_t tret = esp_timer_create(&ts_args, &s_ts_poll_timer);
-          if (tret != ESP_OK)
-          {
-            ESP_LOGE(tag, "esp_timer_create(ts_poll) failed: %s — Tailscale icon will not update",
-                     esp_err_to_name(tret));
-            s_ts_poll_timer = NULL;
-          }
-        }
-        if (s_ts_poll_timer)
-        {
-          esp_timer_start_periodic(s_ts_poll_timer, TS_POLL_PERIOD_US);
-        }
-      }
-      else
-      {
-        ESP_LOGE(tag, "microlink_init failed");
-      }
-    }
-    else
-    {
-      microlink_rebind(s_ml);
-      device_info_screen_set_ml(s_ml);
-    }
+    // The flag is cleared in the same step: a later connection to a working network must not
+    // inherit it from an earlier one. WIFI_MGR_NO_INTERNET, if it comes, arrives immediately
+    // after this and turns the derivation yellow.
+    set_link(WIFI_STATUS_CONNECTED, true);
+    // Everything the connect used to do inline — NTP start, Tailscale registration, rebind —
+    // now happens on net_worker. See net_worker_task().
+    net_worker_notify();
     break;
 
   case WIFI_MGR_NO_INTERNET:
-    // Arrives right after CONNECTED, deliberately, so it paints over the green the handler above
-    // just set. The device stays fully operational on the LAN; only the icon disagrees with
-    // "online", which is the honest reading when NTP is about to fail.
+    // Arrives right after CONNECTED, deliberately. The device stays fully operational on the LAN;
+    // only the icon disagrees with "online", which is the honest reading when NTP is about to
+    // fail. Setting the flag is enough — the derivation turns CONNECTED + unverified into yellow.
     ESP_LOGW(tag, "Associated but no internet — clock time may be wrong");
-    s_wifi_unverified = true;
-    status_bar_set_wifi_status(WIFI_STATUS_NO_INTERNET);
+    set_unverified(true);
     break;
 
   case WIFI_MGR_SCAN_DONE:
@@ -691,7 +858,7 @@ void on_wifi_event(const wifi_manager_event_t event)
     ESP_LOGW(tag, "No WiFi credential stored — starting BLE provisioning");
     // Invariant 3: this runs on the wifi task, so the stop is only requested, not awaited.
     wifi_manager_stop();
-    status_bar_set_wifi_status(WIFI_STATUS_PROVISIONING);
+    set_link_status(WIFI_STATUS_PROVISIONING);
     start_provisioning_or_recover();
     break;
 
@@ -699,8 +866,9 @@ void on_wifi_event(const wifi_manager_event_t event)
   case WIFI_MGR_NO_MATCH:
   case WIFI_MGR_ALL_FAILED:
     ESP_LOGW(tag, "WiFi unavailable (event=%d) — will retry with backoff", (int) event);
-    s_wifi_unverified = false; // no connection at all now; the yellow state no longer applies
-    status_bar_set_wifi_status(WIFI_STATUS_DISCONNECTED);
+    // Both in one step: no connection at all now, so the yellow state no longer applies. Clearing
+    // the flag first would publish a green CONNECTED on the way past.
+    set_link(WIFI_STATUS_DISCONNECTED, true);
     schedule_reconnect();
     break;
   }
