@@ -15,7 +15,7 @@
 //
 // Row layout — canonical source is `settings_row_t` in settings_screen.h. 4 headers, 12 items:
 //   Display:  Theme, Brightness
-//   Clock:    Time Format, Show Secs, Timezone (-12..+14)
+//   Clock:    Time Format, Show Secs, Timezone
 //   Sleep:    Sleep H, Sleep M, Sleep S, Sleep Now
 //   Network:  NTP Resync, Reset WiFi, Provisioning (re-enter provisioning; keeps the credential)
 
@@ -73,7 +73,7 @@ static setting_item_t s_items[SETTINGS_ROW_COUNT] = {
     {.label = "- Clock -", .type = STYPE_HEADER},
     {.label = "Time Format", .type = STYPE_TOGGLE, .options = s_format_options, .option_count = 2},
     {.label = "Show Secs", .type = STYPE_TOGGLE, .options = s_secs_options, .option_count = 2},
-    {.label = "Timezone", .type = STYPE_RANGE, .min = -12, .max = 14, .step = 1, .unit = ""},
+    {.label = "Timezone", .type = STYPE_RANGE, .min = SETTINGS_TZ_MIN, .max = SETTINGS_TZ_MAX, .step = 1, .unit = ""},
     {.label = "- Sleep -", .type = STYPE_HEADER},
     {.label = "Sleep H", .type = STYPE_RANGE, .min = 0, .max = 23, .step = 1, .unit = ""},
     {.label = "Sleep M", .type = STYPE_RANGE, .min = 0, .max = 59, .step = 1, .unit = ""},

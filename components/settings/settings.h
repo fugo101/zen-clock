@@ -17,6 +17,21 @@ extern "C"
  */
 #define SETTINGS_BRIGHTNESS_MIN 10
 
+/**
+ * @brief Inclusive bounds of the stored timezone offset, in whole hours from UTC.
+ *
+ * Spans the real-world range (UTC−12 at Baker Island through UTC+14 at Line Islands). Whole
+ * hours only — see ADR-0004 for why half-hour zones are out of scope.
+ *
+ * Enforced on both read and write in settings.c, and used as the `.min`/`.max` of the Timezone
+ * item in the UI so the stored range and the edit range cannot drift apart. Read-clamping is
+ * what recovers a device that already has an out-of-range value on flash: `timezone_fmt()`
+ * would otherwise hand `setenv("TZ", ...)` a nonsense offset and the clock would show a time
+ * no user could explain or correct from the Settings screen.
+ */
+#define SETTINGS_TZ_MIN (-12)
+#define SETTINGS_TZ_MAX 14
+
   /**
    * @brief Initialize the NVS flash.
    * Must be called early in app_main before reading/writing settings.
@@ -105,18 +120,22 @@ extern "C"
   void settings_set_show_seconds(bool show);
 
   /**
-   * @brief Get timezone UTC offset (-12..+14). Default 7 (UTC+7).
+   * @brief Get timezone UTC offset. Default 7 (UTC+7).
+   * @return Offset SETTINGS_TZ_MIN..SETTINGS_TZ_MAX. A value outside that range stored by an
+   *         older build is clamped into it, so the clock can never show an unexplainable time.
    */
   int8_t settings_get_timezone_offset(void);
 
   /**
    * @brief Store timezone UTC offset to NVS.
+   * @param offset Offset, clamped into SETTINGS_TZ_MIN..SETTINGS_TZ_MAX.
    */
   void settings_set_timezone_offset(int8_t offset);
 
   /**
    * @brief Apply timezone offset to the system (setenv + tzset).
    * Call on boot and whenever the setting changes.
+   * @param offset Offset, clamped into SETTINGS_TZ_MIN..SETTINGS_TZ_MAX before being applied.
    */
   void settings_apply_timezone(int8_t offset);
 

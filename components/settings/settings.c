@@ -63,6 +63,23 @@ static uint8_t clamp_brightness(uint8_t percent)
   return percent;
 }
 
+// Same read-and-write rule as brightness, for the same reason: the UI row table was the only
+// thing enforcing -12..+14, so anything that reached NVS by another path (an older build, a
+// direct setter call) stuck. An out-of-range offset feeds timezone_fmt() a TZ string the clock
+// then displays with no way for the user to tell why the time is wrong.
+static int8_t clamp_tz(int8_t offset)
+{
+  if (offset > SETTINGS_TZ_MAX)
+  {
+    return SETTINGS_TZ_MAX;
+  }
+  if (offset < SETTINGS_TZ_MIN)
+  {
+    return SETTINGS_TZ_MIN;
+  }
+  return offset;
+}
+
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 bool settings_get_theme_light(void)
 {
@@ -284,12 +301,22 @@ int8_t settings_get_timezone_offset(void)
   int8_t val = 7;
   nvs_get_i8(h, key_tz_offset, &val);
   nvs_close(h);
-  return val;
+
+  const int8_t clamped = clamp_tz(val);
+  if (clamped != val)
+  {
+    // Deliberately loud: read-clamping exists to rescue a device that already has a bad value
+    // on flash, and doing that silently would hide whatever wrote it.
+    ESP_LOGW(tag, "Timezone offset out of range (%d), clamped to %d", val, clamped);
+  }
+  return clamped;
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 void settings_set_timezone_offset(int8_t offset)
 {
+  offset = clamp_tz(offset);
+
   nvs_handle_t h;
   esp_err_t err = nvs_open(nvs_namespace, NVS_READWRITE, &h);
   if (err != ESP_OK)
@@ -311,6 +338,13 @@ void settings_set_timezone_offset(int8_t offset)
 
 void settings_apply_timezone(int8_t offset)
 {
+  // Clamped here too, not just in the getter: this is the only function that actually reaches
+  // setenv("TZ", ...), and it is public. Both callers today pass a bounded value, but an
+  // out-of-range one would build a TZ string newlib cannot parse and silently falls back to UTC
+  // from — the unexplainable-wrong-clock symptom this clamp exists to prevent, arrived at
+  // through the one path that bypasses NVS entirely.
+  offset = clamp_tz(offset);
+
   char tz[12];
   timezone_fmt(tz, sizeof(tz), offset);
   setenv("TZ", tz, 1);
