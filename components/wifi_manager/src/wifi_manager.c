@@ -41,9 +41,9 @@ static TaskHandle_t s_task_handle = NULL;
 static wifi_event_cb_t s_callback = NULL;
 static wifi_state_t s_state = WIFI_ST_IDLE;
 
-static char s_ssid[SSID_MAX_LEN] = {0};
-static char s_pass[PASS_MAX_LEN] = {0};
-static char s_connected_ssid[SSID_MAX_LEN] = {0};
+static char s_ssid[WIFI_SSID_MAX_LEN] = {0};
+static char s_pass[WIFI_PASS_MAX_LEN] = {0};
+static char s_connected_ssid[WIFI_SSID_MAX_LEN] = {0};
 static char s_ip_str[16] = {0};
 
 // Matched AP record — set in SCANNING, used in CONNECTING
@@ -386,8 +386,8 @@ static bool try_connect_candidate(const wifi_ap_record_t *ap, const char *passwo
 
   if (bits & BIT_GOT_IP)
   {
-    strncpy(s_connected_ssid, ssid, SSID_MAX_LEN - 1);
-    s_connected_ssid[SSID_MAX_LEN - 1] = '\0';
+    strncpy(s_connected_ssid, ssid, WIFI_SSID_MAX_LEN - 1);
+    s_connected_ssid[WIFI_SSID_MAX_LEN - 1] = '\0';
     return true;
   }
 
@@ -526,8 +526,8 @@ static void wifi_task(void *arg) // NOLINT(readability-non-const-parameter)
       if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK && strcmp((const char *) ap_info.ssid, s_ssid) == 0)
       {
         ESP_LOGI(tag, "Already connected to \"%s\" — skipping scan+connect", s_ssid);
-        strncpy(s_connected_ssid, s_ssid, SSID_MAX_LEN - 1);
-        s_connected_ssid[SSID_MAX_LEN - 1] = '\0';
+        strncpy(s_connected_ssid, s_ssid, WIFI_SSID_MAX_LEN - 1);
+        s_connected_ssid[WIFI_SSID_MAX_LEN - 1] = '\0';
         xEventGroupClearBits(s_event_group, BIT_GOT_IP | BIT_DISCONNECTED);
         set_state(WIFI_ST_VERIFYING);
         break;

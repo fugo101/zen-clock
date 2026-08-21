@@ -305,20 +305,9 @@ static void start_provisioning_or_recover(void)
   schedule_reconnect();
 }
 
-static void stop_wifi_for_provisioning(void)
-{
-  const esp_err_t ret = wifi_manager_stop();
-  if (ret != ESP_OK)
-  {
-    // Reachable: the DNS probe in VERIFYING is not bounded by STOP_TIMEOUT_MS. Proceed anyway —
-    // refusing would leave the user with no way out — but do not pretend the radio is idle.
-    ESP_LOGW(tag, "WiFi did not settle (%s) — provisioning may contend with the radio", esp_err_to_name(ret));
-  }
-}
-
 static void do_reset_wifi(void)
 {
-  stop_wifi_for_provisioning();
+  wifi_manager_stop();
   wifi_manager_clear_credential();
   start_provisioning_or_recover();
 }
@@ -330,7 +319,7 @@ static void do_provisioning(void)
   if (!ble_provisioning_is_active())
   {
     ESP_LOGI(tag, "Starting provisioning (credential kept)");
-    stop_wifi_for_provisioning();
+    wifi_manager_stop();
     start_provisioning_or_recover();
     return; // BLE_PROV_STARTED puts the QR up
   }
@@ -347,9 +336,7 @@ static void do_provisioning(void)
 
 // Dismissing the QR overlay on a device that already has a credential means "never mind" — and
 // getting here cost the user their connection, because do_provisioning() stopped WiFi to hand the
-// radio to network_prov_mgr. Nothing else brings it back: wifi_manager_stop() deliberately
-// suppresses its failure events, so on_wifi_event never fires and schedule_reconnect() never runs.
-// Without this the device sat in IDLE with no IP and no Tailscale until it was rebooted.
+// radio to network_prov_mgr. Per invariant 1 of wifi_manager_stop(), restarting it is ours to do.
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 static void dismiss_provisioning(void)
 {
@@ -590,9 +577,8 @@ void on_ble_prov_event(const ble_prov_event_t event, const char *ssid, const cha
     lvgl_port_lock(0);
     prov_screen_hide();
     lvgl_port_unlock();
-    // Safe now, and only now: the manager has released the radio. do_provisioning() stopped
-    // WiFi on the way in, and nothing else would ever start it again — wifi_manager_stop()
-    // suppresses its own failure events, so no reconnect is ever scheduled.
+    // Safe now, and only now: the manager has released the radio. do_provisioning() stopped WiFi
+    // on the way in, and per invariant 1 nothing but this call ever brings it back.
     const esp_err_t ret = wifi_manager_start();
     if (ret != ESP_OK)
     {
@@ -779,7 +765,8 @@ void on_wifi_event(const wifi_manager_event_t event)
 
   case WIFI_MGR_NO_CRED:
     ESP_LOGW(tag, "No WiFi credential stored — starting BLE provisioning");
-    stop_wifi_for_provisioning();
+    // Invariant 3: this runs on the wifi task, so the stop is only requested, not awaited.
+    wifi_manager_stop();
     if (wifi_event_lvgl_lock())
     {
       status_bar_set_wifi_status(WIFI_STATUS_PROVISIONING);
