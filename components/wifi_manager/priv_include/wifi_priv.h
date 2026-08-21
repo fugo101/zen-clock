@@ -7,17 +7,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "wifi_manager.h" // WIFI_SSID_MAX_LEN / WIFI_PASS_MAX_LEN — defined there, not here
+
 #ifdef __cplusplus
 extern "C"
 {
 #endif
-
-  // ============================================================
-  // Buffer sizes (keep in sync with WIFI_SSID_MAX_LEN / WIFI_PASS_MAX_LEN)
-  // ============================================================
-
-#define SSID_MAX_LEN 33 // IEEE 802.11 max SSID + null
-#define PASS_MAX_LEN 65 // WPA max 63 chars + null
 
   // ============================================================
   // Scan — multiple rounds merged by BSSID
@@ -41,13 +36,8 @@ extern "C"
   // ============================================================
 
   // Covers the bounded paths: one scan round (SCAN_MAX_TIME_MS × ~13 channels ≈ 4s), the
-  // stop-aware connect wait, and the 300ms post-disconnect settle.
-  //
-  // It does NOT bound VERIFYING. getaddrinfo() in do_dns_probe() takes no timeout argument and
-  // is capped only by lwIP's DNS retries, which on a dead link can exceed this budget on its own
-  // — and wifi_manager_stop() makes that worse by disconnecting first, killing the route out from
-  // under the in-flight lookup. Callers must therefore treat ESP_ERR_TIMEOUT as reachable in
-  // normal use rather than as an impossible error.
+  // stop-aware connect wait, and the 300ms post-disconnect settle. It does NOT bound VERIFYING —
+  // see invariant 2 on wifi_manager_stop() in wifi_manager.h for why that leaks out to callers.
 #define STOP_TIMEOUT_MS 6000
 #define STOP_POLL_MS    20
 

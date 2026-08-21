@@ -101,8 +101,10 @@ esp_err_t wifi_manager_init(void);
 esp_err_t wifi_manager_start(void);
 
 /**
- * @brief Stop WiFi and return task to IDLE.
- * Disconnects immediately; fires WIFI_MGR_DISCONNECTED event.
+ * @brief Stop WiFi and return the task to IDLE.
+ * Fires NO event — not for the stop, not for what it interrupts. The caller owns restarting
+ * WiFi. ESP_ERR_TIMEOUT is a normal outcome. See wifi_manager.h for the full five-point
+ * contract; it is the source of truth, not this file.
  */
 esp_err_t wifi_manager_stop(void);
 ```
@@ -112,13 +114,13 @@ esp_err_t wifi_manager_stop(void);
 ```c
 /**
  * @brief Get connected SSID.
- * @return Pointer to SSID string, or empty string if not connected.
+ * @return Pointer to an unlocked static buffer, or NULL if not connected. Copy before use.
  */
 const char *wifi_manager_get_ssid(void);
 
 /**
  * @brief Get connected IP address as a string.
- * @return Pointer to IP string, or empty string if not connected.
+ * @return Pointer to an unlocked static buffer, or NULL if not connected. Copy before use.
  */
 const char *wifi_manager_get_ip_str(void);
 ```

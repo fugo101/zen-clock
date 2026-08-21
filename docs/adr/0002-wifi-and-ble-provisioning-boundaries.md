@@ -10,6 +10,12 @@ re-provisioning on any connection failure — would drop a device that merely lo
 provisioning mode, which looks indistinguishable from a factory-reset device to the user. A retry
 must always stay armed instead.
 
+**`wifi_manager_stop()` fires no events, so whoever stops WiFi owns restarting it.** That is what
+lets a deliberate stop hand the radio to `network_prov_mgr` without the app scheduling a reconnect
+against itself — and it is why `dismiss_provisioning()` and the `BLE_PROV_STOPPED` handler restart
+WiFi by hand. The full contract (five numbered invariants) is stated once, on the declaration in
+`components/wifi_manager/include/wifi_manager.h`; that header is the source of truth, not this file.
+
 **There is deliberately no periodic DNS re-probe once `WIFI_ST_CONNECTED`.** `do_dns_probe()`
 contains an unbounded `getaddrinfo()`, and `wifi_manager_stop()` must be able to interrupt the
 CONNECTED state within its stop timeout — a background re-probe loop would risk blocking that. A

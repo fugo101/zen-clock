@@ -61,8 +61,8 @@ bool wifi_manager_has_credential(void)
   {
     return false;
   }
-  size_t len = SSID_MAX_LEN;
-  char ssid[SSID_MAX_LEN];
+  size_t len = WIFI_SSID_MAX_LEN;
+  char ssid[WIFI_SSID_MAX_LEN];
   bool has = (nvs_get_str(h, NVS_KEY_SSID, ssid, &len) == ESP_OK && len > 1);
   nvs_close(h);
   return has;
