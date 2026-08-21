@@ -8,6 +8,7 @@
 #include "ui_utils.h"
 #include "timezone_fmt.h"
 #include "backoff.h"
+#include "input_policy.h"
 
 void setUp(void)
 {
@@ -106,6 +107,92 @@ static void test_backoff_reset_to_start_then_doubles_again(void)
   TEST_ASSERT_EQUAL_UINT32(60, backoff_next_s(s, true));
 }
 
+// --- input_policy ----------------------------------------------------------
+//
+// The four guards that used to be fused into on_button_press(). PIN_RELEASED/PIN_PRESSED mirror
+// the active-low levels the BSP reads off the *other* button's pad.
+
+#define PIN_PRESSED  0
+#define PIN_RELEASED 1
+
+static void assert_nav(const input_outcome_t outcome, const nav_action_t expected)
+{
+  TEST_ASSERT_EQUAL_INT(INPUT_OUTCOME_NAV, outcome.kind);
+  TEST_ASSERT_EQUAL_INT(expected, outcome.action);
+}
+
+static void test_input_policy_maps_all_four_button_events(void)
+{
+  assert_nav(input_policy_decide(INPUT_BTN_BOOT, INPUT_EVENT_SHORT, PIN_RELEASED, false), NAV_ACTION_UP);
+  assert_nav(input_policy_decide(INPUT_BTN_BOOT, INPUT_EVENT_LONG, PIN_RELEASED, false), NAV_ACTION_SELECT);
+  assert_nav(input_policy_decide(INPUT_BTN_IO14, INPUT_EVENT_SHORT, PIN_RELEASED, false), NAV_ACTION_DOWN);
+  assert_nav(input_policy_decide(INPUT_BTN_IO14, INPUT_EVENT_LONG, PIN_RELEASED, false), NAV_ACTION_BACK);
+}
+
+static void test_input_policy_emergency_io14_resets_wifi(void)
+{
+  const input_outcome_t o = input_policy_decide(INPUT_BTN_IO14, INPUT_EVENT_EMERGENCY, PIN_RELEASED, false);
+  TEST_ASSERT_EQUAL_INT(INPUT_OUTCOME_RESET_WIFI, o.kind);
+}
+
+static void test_input_policy_emergency_outranks_the_qr_overlay(void)
+{
+  // The escape hatch has to work from the provisioning screen too — that is where a user with a
+  // half-provisioned device is most likely to be holding the button.
+  const input_outcome_t o = input_policy_decide(INPUT_BTN_IO14, INPUT_EVENT_EMERGENCY, PIN_PRESSED, true);
+  TEST_ASSERT_EQUAL_INT(INPUT_OUTCOME_RESET_WIFI, o.kind);
+}
+
+static void test_input_policy_emergency_on_boot_falls_back_to_select(void)
+{
+  // The BSP only emits EMERGENCY for IO14; if that ever changes, a BOOT hold must still navigate
+  // rather than vanish.
+  assert_nav(input_policy_decide(INPUT_BTN_BOOT, INPUT_EVENT_EMERGENCY, PIN_RELEASED, false), NAV_ACTION_SELECT);
+}
+
+static void test_input_policy_deep_sleep_combo_from_either_button(void)
+{
+  // Whichever button reports LONG first wins the race; the other is still physically down.
+  TEST_ASSERT_EQUAL_INT(INPUT_OUTCOME_DEEP_SLEEP,
+                        input_policy_decide(INPUT_BTN_BOOT, INPUT_EVENT_LONG, PIN_PRESSED, false).kind);
+  TEST_ASSERT_EQUAL_INT(INPUT_OUTCOME_DEEP_SLEEP,
+                        input_policy_decide(INPUT_BTN_IO14, INPUT_EVENT_LONG, PIN_PRESSED, false).kind);
+}
+
+static void test_input_policy_short_press_never_sleeps(void)
+{
+  // Holding one button while tapping the other must not sleep the device.
+  assert_nav(input_policy_decide(INPUT_BTN_BOOT, INPUT_EVENT_SHORT, PIN_PRESSED, false), NAV_ACTION_UP);
+  assert_nav(input_policy_decide(INPUT_BTN_IO14, INPUT_EVENT_SHORT, PIN_PRESSED, false), NAV_ACTION_DOWN);
+}
+
+static void test_input_policy_deep_sleep_combo_outranks_the_qr_overlay(void)
+{
+  // The policy still reports the combo while the QR is up; declining it is deep_sleep's own
+  // inhibit callback's job, not this module's.
+  TEST_ASSERT_EQUAL_INT(INPUT_OUTCOME_DEEP_SLEEP,
+                        input_policy_decide(INPUT_BTN_BOOT, INPUT_EVENT_LONG, PIN_PRESSED, true).kind);
+}
+
+static void test_input_policy_qr_overlay_swallows_navigation(void)
+{
+  // Any transition would delete the overlay and nothing would put it back.
+  TEST_ASSERT_EQUAL_INT(INPUT_OUTCOME_SWALLOW,
+                        input_policy_decide(INPUT_BTN_BOOT, INPUT_EVENT_SHORT, PIN_RELEASED, true).kind);
+  TEST_ASSERT_EQUAL_INT(INPUT_OUTCOME_SWALLOW,
+                        input_policy_decide(INPUT_BTN_BOOT, INPUT_EVENT_LONG, PIN_RELEASED, true).kind);
+  TEST_ASSERT_EQUAL_INT(INPUT_OUTCOME_SWALLOW,
+                        input_policy_decide(INPUT_BTN_IO14, INPUT_EVENT_SHORT, PIN_RELEASED, true).kind);
+}
+
+static void test_input_policy_qr_overlay_back_dismisses(void)
+{
+  // BACK (IO14 long) is the one action that gets through: an unprovisioned device sits here
+  // indefinitely and still has to be usable as a clock.
+  TEST_ASSERT_EQUAL_INT(INPUT_OUTCOME_DISMISS_PROV,
+                        input_policy_decide(INPUT_BTN_IO14, INPUT_EVENT_LONG, PIN_RELEASED, true).kind);
+}
+
 int main(void)
 {
   UNITY_BEGIN();
@@ -120,5 +207,14 @@ int main(void)
   RUN_TEST(test_backoff_unarmed_does_not_consume_a_step);
   RUN_TEST(test_backoff_unarmed_holds_at_the_ceiling_too);
   RUN_TEST(test_backoff_reset_to_start_then_doubles_again);
+  RUN_TEST(test_input_policy_maps_all_four_button_events);
+  RUN_TEST(test_input_policy_emergency_io14_resets_wifi);
+  RUN_TEST(test_input_policy_emergency_outranks_the_qr_overlay);
+  RUN_TEST(test_input_policy_emergency_on_boot_falls_back_to_select);
+  RUN_TEST(test_input_policy_deep_sleep_combo_from_either_button);
+  RUN_TEST(test_input_policy_short_press_never_sleeps);
+  RUN_TEST(test_input_policy_deep_sleep_combo_outranks_the_qr_overlay);
+  RUN_TEST(test_input_policy_qr_overlay_swallows_navigation);
+  RUN_TEST(test_input_policy_qr_overlay_back_dismisses);
   return UNITY_END();
 }
