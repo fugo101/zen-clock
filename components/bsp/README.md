@@ -13,7 +13,7 @@ bsp/
 ├── src/
 │   ├── bsp_display.c     ← Init orchestrator + I80 bus + ST7789 panel + LVGL port
 │   ├── bsp_backlight.c   ← Thin facade over lcd_backlight component
-│   ├── bsp_battery.c     ← ADC1 oneshot + calibration + percentage curve
+│   ├── bsp_battery.c     ← ADC1 oneshot + calibration + adc_battery_estimation (percentage)
 │   └── bsp_buttons.c     ← GPIO ISR + FreeRTOS debounce task + callback API
 └── CMakeLists.txt         ← ESP-IDF component registration
 ```
@@ -43,12 +43,9 @@ Header: [`include/bsp.h`](include/bsp.h)
 
 ### Battery
 
-| Function                                        | Description                                                                                      |
-|--------------------------------------------------|--------------------------------------------------------------------------------------------------|
-| `int bsp_battery_get_voltage(void)`              | Battery voltage in millivolts (×2 corrected for resistor divider). Returns `-1` on error.        |
-| `int bsp_battery_get_percentage(void)`           | Battery level 0–100% using a curve-fitting formula (float, hardware FPU). Returns `-1` on error. |
-| `bool bsp_battery_usb_connected(void)`           | `true` if voltage ≥ 4500 mV (USB power detected).                                                |
-| `void bsp_battery_read(int *mv, int *pct, bool *usb)` | One ADC conversion feeding all three values at once. Prefer this over calling the three getters above separately — each of them triggers its own fresh conversion, so two+ calls per refresh both waste conversions and (since C's argument evaluation order is unspecified) can print values from two different samples that disagree. Any output pointer may be `NULL`. |
+| Function                                        | Description                                                                                                                                                                                                                                                                                                                                                                    |
+|--------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `void bsp_battery_read(int *pct, bool *usb)`    | The **only** battery function — no standalone getters, no raw-voltage output. `*pct` comes from `espressif/adc_battery_estimation`, which does its own independent, internally-filtered read (~11 ADC conversions total per call — no longer O(1)); it's not meaningful while `*usb` is true (ADC reads the USB rail, not the battery) and callers must not display it in that case. `*usb` is a plain voltage-threshold check (≥ 4600 mV). Raw mV is logged at `ESP_LOGD` inside `bsp_battery.c` (visible over `pio device monitor`) but not exposed in the API — nothing outside that file needs it. Any output pointer may be `NULL`. On failure `*pct` is `-1`, `*usb` is `false`. See `docs/adr/0001-battery-percentage-source.md`. |
 
 ### Buttons
 
@@ -119,7 +116,8 @@ esp_lcd_panel_set_gap(panel_handle, 0, 35);
 | Button debounce    | 50 ms                                                 | `bsp_buttons.c` |
 | Button task        | 2 KB stack, priority 3, core 0                        | `bsp_buttons.c` |
 | ADC                | ADC1_CH3, 12dB attenuation, curve-fitting calibration | `bsp_battery.c` |
-| USB threshold      | ≥ 4500 mV (after ×2)                                  | `bsp_battery.c` |
+| USB threshold      | ≥ 4600 mV (after ×2)                                  | `bsp_battery.c` |
+| Battery divider    | 100kΩ/100kΩ (GPIO4)                                   | `bsp_battery.c` |
 
 ## Usage Example
 
@@ -155,7 +153,8 @@ From [`CMakeLists.txt`](CMakeLists.txt):
 
 ```
 REQUIRES: esp_lvgl_port, driver, freertos, esp_lcd, lvgl, esp_timer,
-          soc, esp_adc, lcd_backlight, esp_driver_ledc, esp_driver_gpio
+          soc, esp_adc, lcd_backlight, esp_driver_ledc, esp_driver_gpio,
+          adc_battery_estimation
 ```
 
 ## Rules for AI Agents

@@ -17,6 +17,11 @@ dependencies:
     # must point at the component directory (the one with CMakeLists.txt), not the repo root.
     # fugo101/wireguard_lwip comes in transitively via microlink's own manifest -- never declare
     # it here directly.
+  espressif/adc_battery_estimation:
+    version: "^0.2.2"
+    public: true
+    # espressif/cmake_utilities comes in transitively via this component's own manifest — never
+    # declare it here directly (same pattern as wireguard_lwip above).
   ## network_provisioning is not used directly by this component — it comes in transitively via
   ## the ble_provisioning component's own manifest (components/ble_provisioning/idf_component.yml).
   ## Required IDF version

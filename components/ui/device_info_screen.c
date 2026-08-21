@@ -10,12 +10,15 @@
 //   Static (once on create): Chip, Total Heap, Firmware, MAC
 //   Every 1s:  Uptime
 //   Every 10s: Free Heap, SSID, IP, Last NTP, TS Status, TS IP
-//   Every 30s: Battery
+//
+// No Battery row — the status bar (shown on every screen, including this one, via
+// show_screen()) already displays it. A second, independently-timed read of the same
+// slow-converging adc_battery_estimation state used to show a different, briefly-disagreeing
+// number here; removed instead of synchronized.
 
 #include "device_info_screen.h"
 #include "ui_utils.h"
 #include "ui_list.h"
-#include "bsp.h"
 #include "wifi_manager.h"
 #include "microlink.h"
 #include "sntp_sync.h"
@@ -35,7 +38,7 @@
 // ============================================================
 // Row indices
 // ============================================================
-#define ROW_COUNT   12
+#define ROW_COUNT   11
 #define ROW_VISIBLE 5
 
 #define ROW_CHIP       0
@@ -49,11 +52,9 @@
 #define ROW_NTP_SYNC   8
 #define ROW_TS_STATUS  9
 #define ROW_TS_IP      10
-#define ROW_BATTERY    11
 
 static const char *const s_row_labels[ROW_COUNT] = {
-    "Chip", "Firmware", "MAC",      "Free Heap", "Total Heap", "Uptime",
-    "SSID", "IP",       "Last NTP", "TS Status", "TS IP",      "Battery",
+    "Chip", "Firmware", "MAC", "Free Heap", "Total Heap", "Uptime", "SSID", "IP", "Last NTP", "TS Status", "TS IP",
 };
 
 // ============================================================
@@ -66,7 +67,6 @@ static microlink_t *s_ml_handle = NULL;
 
 static lv_timer_t *s_timer_1s = NULL;
 static lv_timer_t *s_timer_10s = NULL;
-static lv_timer_t *s_timer_30s = NULL;
 
 // ============================================================
 // Scroll helper — show/hide rows based on s_scroll
@@ -192,23 +192,6 @@ static void update_tailscale(void)
   }
 }
 
-static void update_battery(void)
-{
-  if (!s_value_labels[ROW_BATTERY])
-  {
-    return;
-  }
-  char buf[20];
-  int mv;
-  int pct;
-  // One ADC conversion instead of two — also fixes a real bug: with two separate calls, C's
-  // unspecified argument evaluation order meant the printed % and mV could come from different
-  // samples and visibly disagree.
-  bsp_battery_read(&mv, &pct, NULL);
-  snprintf(buf, sizeof(buf), "%d%% (%dmV)", pct, mv);
-  lv_label_set_text(s_value_labels[ROW_BATTERY], buf);
-}
-
 // ============================================================
 // Timer callbacks
 // ============================================================
@@ -224,12 +207,6 @@ static void timer_10s_cb(lv_timer_t *t) // NOLINT(readability-non-const-paramete
   update_network();
   update_ntp_sync();
   update_tailscale();
-}
-
-static void timer_30s_cb(lv_timer_t *t) // NOLINT(readability-non-const-parameter)
-{
-  (void) t;
-  update_battery();
 }
 
 // ============================================================
@@ -338,13 +315,11 @@ void device_info_screen_create(lv_obj_t *parent)
   update_network();
   update_ntp_sync();
   update_tailscale();
-  update_battery();
 
   apply_scroll();
 
   s_timer_1s = lv_timer_create(timer_1s_cb, 1000, NULL);
   s_timer_10s = lv_timer_create(timer_10s_cb, 10000, NULL);
-  s_timer_30s = lv_timer_create(timer_30s_cb, 30000, NULL);
 }
 
 void device_info_screen_set_ml(microlink_t *ml)
@@ -369,7 +344,6 @@ void device_info_screen_destroy(void)
 {
   ui_timer_delete(&s_timer_1s);
   ui_timer_delete(&s_timer_10s);
-  ui_timer_delete(&s_timer_30s);
   for (int i = 0; i < ROW_COUNT; i++)
   {
     s_name_labels[i] = NULL;

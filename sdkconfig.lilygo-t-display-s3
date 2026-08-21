@@ -4288,6 +4288,28 @@ CONFIG_WL_SECTOR_SIZE=4096
 # end of Wear Levelling
 
 #
+# ADC Battery Estimation
+#
+# CONFIG_OCV_SOC_MODEL_1 is not set
+CONFIG_OCV_SOC_MODEL_2=y
+# default:
+CONFIG_ADC_FILTER_WINDOW_SIZE=10
+# default:
+CONFIG_BATTERY_CAPACITY_LPF_COEFFICIENT=2
+# default:
+CONFIG_BATTERY_STATE_SOFTWARE_ESTIMATION=y
+
+#
+# Software Estimation Configuration
+#
+# default:
+CONFIG_SOFTWARE_ESTIMATION_SAMPLE_COUNT=10
+# default:
+CONFIG_SOFTWARE_ESTIMATION_SAMPLE_INTERVAL=20000
+# end of Software Estimation Configuration
+# end of ADC Battery Estimation
+
+#
 # cJSON
 #
 # default:
@@ -4295,6 +4317,23 @@ CONFIG_CJSON_NESTING_LIMIT=1000
 # default:
 CONFIG_CJSON_CIRCULAR_LIMIT=10000
 # end of cJSON
+
+#
+# CMake Utilities
+#
+# default:
+# CONFIG_CU_RELINKER_ENABLE is not set
+# default:
+# CONFIG_CU_DIAGNOSTICS_COLOR_NEVER is not set
+# default:
+CONFIG_CU_DIAGNOSTICS_COLOR_ALWAYS=y
+# default:
+# CONFIG_CU_DIAGNOSTICS_COLOR_AUTO is not set
+# default:
+# CONFIG_CU_GCC_LTO_ENABLE is not set
+# default:
+# CONFIG_CU_GCC_STRING_1BYTE_ALIGN is not set
+# end of CMake Utilities
 
 #
 # ESP LVGL PORT

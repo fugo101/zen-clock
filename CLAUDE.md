@@ -139,7 +139,7 @@ widgets.
 | `prov_screen.c`        | QR code overlay shown during BLE provisioning                                                     |
 | `menu_screen.c`        | Menu list screen — row order is `menu_row_t` (`menu_screen.h`)                                    |
 | `settings_screen.c`    | Scrollable settings list with inline edit — 4 groups, 12 items (+ 4 section headers); row order is `settings_row_t` (`settings_screen.h`), the single source of truth |
-| `device_info_screen.c` | System Info screen — 12 read-only rows, scrollable (5 visible), timers 1s/10s/30s                 |
+| `device_info_screen.c` | System Info screen — 11 read-only rows, scrollable (5 visible), timers 1s/10s. No Battery row — the status bar (visible on every screen) already covers it; see `docs/adr/0001-battery-percentage-source.md` |
 | `ui_list.c`            | Shared LVGL-dependent helpers: `ui_apply_scroll()`, `ui_timer_delete()`, and the layout constants used by every scrollable-list screen |
 | `ui_utils.c`           | Pure helpers with no LVGL/ESP-IDF dependency (`ui_circ_next/prev`, `fmt_bytes`) — symlinked into `test/test_pure_logic/`'s host-side Unity tests, so nothing here may `#include "lvgl.h"` |
 
@@ -157,9 +157,9 @@ UP/DOWN navigate, SELECT = enter edit / execute action, BACK = return to Menu
 Edit mode (TOGGLE/RANGE items): UP/DOWN change value (auto-saved to NVS + applied live), SELECT or BACK exits
 Action items (Sleep Now, NTP Resync, Reset WiFi, Provisioning): SELECT executes immediately, no edit mode
 
-System Info (12 rows, 5 visible, scrollable):
+System Info (11 rows, 5 visible, scrollable):
   Chip, Firmware, MAC, Free Heap, Total Heap, Uptime, SSID, IP,
-  Last NTP (HH:MM DD/MM/YY), TS Status, TS IP, Battery
+  Last NTP (HH:MM DD/MM/YY), TS Status, TS IP
 UP/DOWN scroll, BACK = return to Menu
 ```
 

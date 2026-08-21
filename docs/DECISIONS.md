@@ -27,7 +27,7 @@ Everything else in this file is decided or done. These are not.
 | Low-battery icon (red < 15%, blink < 5%) never observed | The brightness clamp half **was** confirmed on device (screen dims, the Settings value correctly stays put — it's a live clamp, never written to NVS). The colour/blink half needs a real pack drained below 15%. |
 | BLE teardown never checked by heap measurement | `network_prov_mgr_deinit()` in the `NETWORK_PROV_END` handler rests on code review plus the upstream example. If a heap trend across repeated provisioning cycles becomes measurable, re-check it. |
 | `do_dns_probe()` proves DNS resolves, not that anything is reachable | See the WiFi section — found 2026-08-13, not in the original audit. |
-| Battery reads 100% on USB power | Pre-existing since the initial BSP commit (`033f806`), not an audit regression. See the Battery section. |
+| Battery % jitter fix (issue #44) — long-idle jitter not yet confirmed | Partially verified on hardware 2026-08-21: boot log clean, USB detection flips immediately, System Info/status-bar disagreement bug found and fixed (see the Battery section). Still needs ~10 min of steady-state log output on battery power, undisturbed, to confirm the original ±3–7% jitter is actually gone. |
 
 ---
 
@@ -172,10 +172,11 @@ panic text at all**; it was entirely early wakeup.
 flushing is contention for nothing — the rail goes away anyway), and `gpio_deep_sleep_hold_en()`
 (above). `RTC_PERIPH` stays ON: it is what keeps the wake-pin pull-ups alive.
 
-**No force-sleep on low battery — a policy decision, not an oversight.** The % → voltage curve has
-never been calibrated against a real measurement, so a guessed threshold to force sleep risked being
-worse than the brownout it was meant to prevent. Brownout mid-`nvs_commit` therefore remains a known
-accepted risk.
+**No force-sleep on low battery — a policy decision, not an oversight.** Issue #44 (2026-08-20)
+replaced the hand-rolled curve with `espressif/adc_battery_estimation`'s Analog Devices OCV-SOC
+table, but that's still a generic Li-ion curve, not one calibrated against this specific pack — a
+guessed threshold to force sleep still risks being worse than the brownout it was meant to prevent.
+Brownout mid-`nvs_commit` therefore remains a known accepted risk.
 
 **The low-battery clamp is edge-triggered and never written to NVS.** It fires on the not-low → low
 transition and restores on recovery, so it can't fight the user's saved brightness. It never applies
@@ -191,19 +192,67 @@ wrong.
 
 **None of the ADC init path is `ESP_ERROR_CHECK`'d.** `adc_cali_create_scheme_curve_fitting()`
 returns `ESP_ERR_NOT_SUPPORTED` on a chip whose eFuse carries no calibration data — a property of
-that individual part, not a bug. It bricked boot for a cosmetic battery percentage. All three calls
-degrade; handles stay NULL, readings report `-1`, and the UI already renders that as "N/A".
+that individual part, not a bug. It bricked boot for a cosmetic battery percentage. All init calls —
+including `adc_battery_estimation_create()` below — degrade the same way: handles stay NULL,
+readings report `-1`, and the UI already renders that as "N/A".
 
-**`bsp_battery_read(mv, pct, usb)` exists so one ADC conversion feeds all three outputs.** Beyond
-halving conversions, it fixes a real bug the audit missed: with two separate calls, C's unspecified
-argument evaluation order meant the printed `%` and `mV` could come from different samples and
-visibly disagree.
+**`bsp_battery_read(pct, usb)` is the only public battery function** (issue #44, 2026-08-20).
+`bsp_battery_get_voltage()`, `bsp_battery_get_percentage()` and `bsp_battery_usb_connected()` were
+deleted — a repo-wide grep found zero callers outside `bsp_battery.c` itself, and the point of this
+change was a leaner wrapper around `espressif/adc_battery_estimation`, not more public surface.
 
-**Battery reads 100% whenever USB is connected** — known, pre-existing since `033f806`, not fixed.
-`percentage_from_mv()` runs the raw ADC voltage through one curve regardless of power source. On USB
-the pin sees ≥ 4600 mV (that's the USB-detection threshold), well above the 4200 mV "full" the curve
-is built on, so it clamps to 100. The charge icon (`LV_SYMBOL_CHARGE`) swapping in on USB is correct
-and intended; only the number is meaningless. Fix belongs with a real battery-curve calibration.
+**Raw millivolts is not part of the public API — deliberately, not an oversight.** It briefly was
+(`*mv` on `bsp_battery_read()`), specifically so `*mv` and `*pct` could no longer share one atomic
+ADC conversion the way they used to (see git history pre-#44): the jitter fix *is*
+`adc_battery_estimation_get_capacity()`'s internal 10-sample-averaged read, which the library owns
+and exposes no raw-voltage hook into, so `*pct` was already necessarily a second, independent read.
+Once `*mv` stopped being guaranteed-consistent with `*pct` anyway, exposing it bought nothing but a
+harder-to-explain contract — removed instead. The raw read didn't go away, though: `bsp_battery.c`
+still needs it internally for the USB-threshold check (see below), and it's still logged at
+`ESP_LOGD` for anyone debugging over `pio device monitor` or calibrating a real curve later. See
+`docs/adr/0001-battery-percentage-source.md`.
+
+**The library can't own the ADC unit — `bsp_battery.c` still does.** `adc_battery_estimation` has no
+voltage-only getter, and it has no other way to detect USB power on this board (no charge-detect
+pin) — so `bsp_battery_read()` must keep reading the channel itself for the USB-threshold check;
+ESP-IDF also won't let two independent `adc_oneshot_unit_handle_t`s own the same physical unit. The
+library is handed our already-initialized handles via `.external.adc_handle`/`.adc_cali_handle`, not
+`.internal.*` auto-creation — the wrapper couldn't be eliminated, only thinned. This holds regardless
+of whether raw mV is exposed publicly — dropping it from the API didn't remove this constraint.
+
+**`charging_detect_cb` is wired to the existing immediate USB-threshold check, not left for the
+library's own software trend estimation.** First cut left it unset, trusting the library's
+Kconfig-driven trend estimator to drive its own internal capacity monotonicity. Code review caught
+the real bug that creates: the trend estimator only updates every ~200s (10 samples × 20s), so a
+USB session shorter than that leaves `is_charging` stuck at its pre-plug-in value the whole time —
+`get_capacity()`'s "discharging: capacity must not increase" clamp then pins the reported % at its
+pre-charge value even *after* unplugging, since `is_charging` is still stale. A brief top-up could
+permanently depress the displayed percentage until enough real discharging (or another long-enough
+charge) eventually moved it. `charging_usb_cb()` in `bsp_battery.c` closes this by feeding the
+library the same immediate voltage-threshold signal `*usb` already uses — one source of truth, no
+lag, no stuck values.
+
+**On USB, the % is hidden entirely, not shown.** The ADC is reading the USB rail through the same
+divider, not the battery — the value is structurally above every point in both prebuilt OCV-SOC
+curves, so it clamps to the highest curve point regardless of which curve or charging-detection
+method is used; swapping the estimation library does not by itself stop this. `status_bar.c` blanks
+the `%` label; the charge icon alone carries the meaning.
+
+**`device_info_screen.c` has no Battery row — deleted, not just hidden.** It used to show its own
+`%`/"Charging"/"N/A", read independently from `status_bar.c` on a second, offset 30s timer, from
+the same shared `adc_battery_estimation` handle. Confirmed on hardware (2026-08-21): right after a
+USB reconnect, the two independent reads caught the library's LPF converging toward its new target
+at different moments, so the status bar and System Info visibly disagreed for a while before both
+settled — a real symptom of the O(1) loss below, not a separate bug. Fix was to stop reading it a
+second time at all: the status bar is already visible on every screen (`show_screen()` in `nav.c`
+mounts it unconditionally), so the row was pure duplication. This also closes issue #61 — only one
+30s timer touches the battery now.
+
+**`bsp_battery_read()` is no longer O(1) — accepted.** `*pct` costs
+`adc_battery_estimation_get_capacity()`'s own ~10-sample filtered read plus a std-dev pass, plus 1
+raw conversion for the USB-threshold check: ~11 ADC conversions per call instead of 1. Only
+`status_bar.c` calls it now (one 30s timer), so this no longer compounds across two independent
+readers the way it did before the Battery-row removal above.
 
 ---
 
