@@ -61,8 +61,23 @@ screen visibility, not manager activity.** Nav actions are swallowed while the o
 screen transition can delete it out from under BLE, but `BACK` hides it and returns to the clock
 with BLE still advertising — a device that has never been provisioned must remain usable as a clock
 indefinitely, not stuck showing a QR code forever. That's why the deep-sleep inhibit check uses
-`prov_screen_is_visible()` and not `ble_provisioning_is_active()`: the latter would mean such a
+`prov_screen_is_visible()` and not the session phase: the latter would mean such a
 device could never auto-sleep at all.
+
+**The named provisioning-session phase deliberately excludes dismissal.** The session lifecycle is
+now an enumerated phase plus a latched outcome (`components/ble_provisioning/src/prov_session.c`),
+which replaced five loose booleans and gave the one-way 110 KB release a host-tested transition
+table. `DISMISSED` was proposed as a phase of that machine and rejected: overlay visibility is
+published UI intent owned by `prov_screen.c` (ADR-0007), and the two are genuinely independent —
+dismissed-but-advertising and visible-and-advertising are the same session phase. Folding the
+overlay into the phase would give the deep-sleep inhibit exactly one predicate to read, and it
+would be the wrong one, re-creating the sleep-forever bug the paragraph above exists to prevent.
+The refactor renamed and tested the machine; it did not move the predicate.
+
+Two properties of that machine are asserted as host tests rather than left to review, because both
+are irreversible in the wrong direction: no input sequence may report a successful session without
+an outcome having been latched, and no input sequence may leave the terminal
+memory-released phase.
 
 **On a wrong-password retry, the BLE manager is never stopped and restarted.** Instead, the stored
 NVS credential is cleared and the QR overlay is re-shown so the phone retries over the existing BLE

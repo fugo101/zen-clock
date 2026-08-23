@@ -9,6 +9,7 @@ extern "C"
 #endif
 
 #include "esp_err.h"
+#include "prov_session.h"
 
   // ============================================================
   // Events fired via callback
@@ -57,9 +58,19 @@ extern "C"
   esp_err_t ble_provisioning_stop(void);
 
   /**
-   * @brief Check whether BLE advertisement is currently active.
+   * @brief The current provisioning session's phase.
+   *
+   * Replaces a bool that claimed to report "is advertising" but actually returned "advertising and
+   * not stopping" — a derived answer whose meaning only made sense at its single call site. Callers
+   * switch on the phase instead: PROV_PHASE_ADVERTISING means the manager is up and a QR re-show is
+   * all that is needed, PROV_PHASE_STOPPING means a teardown is in flight and must not be raced,
+   * PROV_PHASE_UNAVAILABLE means the BLE controller memory is gone and only a reboot can provision.
+   *
+   * Says nothing about whether the QR overlay is on screen — the overlay is dismissible while the
+   * session runs on, and per ADR-0002 the deep-sleep inhibit must keep reading the overlay, not
+   * this. See prov_session.h.
    */
-  bool ble_provisioning_is_active(void);
+  prov_phase_t ble_provisioning_session_phase(void);
 
   /**
    * @brief Get the BLE device name used for provisioning (e.g. "PROV_ZenClock_A1B2").

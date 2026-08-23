@@ -13,6 +13,7 @@
 //     installed network_provisioning/manager.h header before building.
 
 #include "ble_provisioning.h"
+#include "prov_session.h"
 
 #include <string.h>
 #include <esp_log.h>
@@ -37,24 +38,84 @@ static const char *const tag = "BLEProv";
 
 static ble_prov_cb_t s_callback = NULL;
 
-// Two distinct lifetimes, previously conflated into one flag:
-//   s_active      — the provisioning service is advertising / running
-//   s_initialized — network_prov_mgr_init() succeeded and deinit() is still owed
-// NETWORK_PROV_END clears s_active before invoking the app callback, so gating teardown on
-// s_active meant ble_provisioning_stop() returned early and deinit() never ran at all.
-static bool s_active = false;
+// The session lifecycle — phase plus latched outcome — lives in prov_session.c, which is pure and
+// host-tested (test/test_pure_logic/). It replaced four booleans (s_active, s_stopping, s_cred_ok,
+// s_mem_freed) whose combinations were the highest-stakes untested algebra in the firmware: the
+// outcome it computes is what permits ble_provisioning_release_memory()'s one-way 110 KB free.
+//
+// Guarded by a spinlock rather than made atomic, because it is a struct: the manager's events
+// arrive on the default event loop while do_provisioning() reads the phase from btn_worker. The
+// booleans this replaced were shared across those same two tasks with no synchronization at all.
+static portMUX_TYPE s_session_mux = portMUX_INITIALIZER_UNLOCKED;
+static prov_session_t s_session;
+
+// Deliberately NOT part of the session phase: this tracks whether network_prov_mgr_deinit() is
+// owed, which cycles within a single session rather than being a phase of one. NETWORK_PROV_END
+// clears the phase before invoking the app callback, so gating teardown on the phase would mean
+// ble_provisioning_stop() returned early and deinit() never ran at all.
 static bool s_initialized = false;
-static bool s_mem_freed = false;
 
-// Latched by NETWORK_PROV_WIFI_CRED_SUCCESS, read by NETWORK_PROV_END, cleared on every start.
-// Tells a completed provisioning apart from a cancelled one — see the END case below.
-static bool s_cred_ok = false;
+// The action enum mirrors ble_prov_event_t with PROV_ACT_NONE occupying 0, so each emitting action
+// sits one past its event. session_emit() does not rely on that arithmetic — it maps explicitly —
+// so these assert the intended 1:1 correspondence rather than guarding a computation: adding an
+// event to one enum without the other fails the build here instead of in review.
+_Static_assert((int) PROV_ACT_EMIT_STARTED == (int) BLE_PROV_STARTED + 1, "prov_session actions drifted");
+_Static_assert((int) PROV_ACT_EMIT_CRED_RECEIVED == (int) BLE_PROV_CRED_RECEIVED + 1, "prov_session actions drifted");
+_Static_assert((int) PROV_ACT_EMIT_SUCCESS == (int) BLE_PROV_SUCCESS + 1, "prov_session actions drifted");
+_Static_assert((int) PROV_ACT_EMIT_FAILED == (int) BLE_PROV_FAILED + 1, "prov_session actions drifted");
+_Static_assert((int) PROV_ACT_EMIT_STOPPED == (int) BLE_PROV_STOPPED + 1, "prov_session actions drifted");
 
-// Set while a deliberate stop is winding down. The manager can emit WIFI_CRED_FAIL as it tears a
-// session down, and the app answers BLE_PROV_FAILED by erasing the stored WiFi credential and
-// re-showing the QR — so an unguarded cancel wiped the user's WiFi password. Same idea as
-// wifi_manager's stop_requested(): a failure raised by our own stop is not a real failure.
-static bool s_stopping = false;
+// Advance the session and hand back what to do about it. The callback is deliberately NOT invoked
+// in here: it runs app code (which stops WiFi, repaints, frees the BT controller) and must never
+// run inside the spinlock.
+static prov_action_t session_feed(const prov_input_t input)
+{
+  portENTER_CRITICAL(&s_session_mux);
+  const prov_step_t r = prov_session_step(s_session, input);
+  s_session = r.next;
+  portEXIT_CRITICAL(&s_session_mux);
+  return r.action;
+}
+
+static prov_phase_t session_phase(void)
+{
+  portENTER_CRITICAL(&s_session_mux);
+  const prov_phase_t phase = s_session.phase;
+  portEXIT_CRITICAL(&s_session_mux);
+  return phase;
+}
+
+// ssid/pass are only meaningful for PROV_ACT_EMIT_CRED_RECEIVED; every other action passes NULL,
+// matching the contract on ble_prov_cb_t.
+static void session_emit(const prov_action_t action, const char *ssid, const char *pass)
+{
+  if (!s_callback)
+  {
+    return;
+  }
+
+  switch (action)
+  {
+  case PROV_ACT_EMIT_STARTED:
+    s_callback(BLE_PROV_STARTED, NULL, NULL);
+    break;
+  case PROV_ACT_EMIT_CRED_RECEIVED:
+    s_callback(BLE_PROV_CRED_RECEIVED, ssid, pass);
+    break;
+  case PROV_ACT_EMIT_SUCCESS:
+    s_callback(BLE_PROV_SUCCESS, NULL, NULL);
+    break;
+  case PROV_ACT_EMIT_FAILED:
+    s_callback(BLE_PROV_FAILED, NULL, NULL);
+    break;
+  case PROV_ACT_EMIT_STOPPED:
+    s_callback(BLE_PROV_STOPPED, NULL, NULL);
+    break;
+  case PROV_ACT_SUPPRESS:
+  case PROV_ACT_NONE:
+    break;
+  }
+}
 
 // SRP6a credentials — heap-alloc'd in ble_provisioning_start(), freed on PROV_END
 static char s_sec2_password[9]; // 8 hex chars from MAC + NUL
@@ -109,11 +170,10 @@ static void prov_event_handler(void *arg, // NOLINT(readability-non-const-parame
   {
   case NETWORK_PROV_START:
     ESP_LOGI(tag, "BLE advertisement started");
-    s_active = true;
-    if (s_callback)
-    {
-      s_callback(BLE_PROV_STARTED, NULL, NULL);
-    }
+    // Emits at most once per session: whichever of this handler and ble_provisioning_start()'s
+    // tail observes the STARTING -> ADVERTISING edge first reports it, and the other becomes a
+    // no-op. They run on different tasks and either order is legal.
+    session_emit(session_feed(PROV_IN_START_OK), NULL, NULL);
     break;
 
   case NETWORK_PROV_WIFI_CRED_RECV:
@@ -139,42 +199,45 @@ static void prov_event_handler(void *arg, // NOLINT(readability-non-const-parame
     memcpy(pass, cfg->password, pass_len);
     pass[pass_len] = '\0';
     ESP_LOGI(tag, "Credentials received: SSID=\"%s\"", ssid);
-    if (s_callback)
-    {
-      s_callback(BLE_PROV_CRED_RECEIVED, ssid, pass);
-    }
+    // Forwarded from every live phase on purpose — see prov_session.c. A credential that arrived
+    // is stored even if a cancel is in flight, because the verification that may follow latches an
+    // outcome regardless, and reporting a success whose credential was never saved is the one
+    // failure here that cannot be undone.
+    session_emit(session_feed(PROV_IN_CRED_RECEIVED), ssid, pass);
     break;
   }
 
   case NETWORK_PROV_WIFI_CRED_SUCCESS:
     ESP_LOGI(tag, "Credential verification succeeded");
-    // Latched because NETWORK_PROV_END carries no outcome of its own — it only says the service
-    // stopped. This flag is the sole thing separating "the phone provisioned us" from "the user
-    // backed out", and only the former may release the BT controller memory.
-    s_cred_ok = true;
+    // Latches the outcome; NETWORK_PROV_END is what reports it. END carries no outcome of its own
+    // — it only says the service stopped — so this latch is the sole thing separating "the phone
+    // provisioned us" from "the user backed out", and only the former may release BT memory.
+    session_feed(PROV_IN_CRED_VERIFIED);
     break;
 
   case NETWORK_PROV_WIFI_CRED_FAIL:
   {
     const auto reason = (network_prov_wifi_sta_fail_reason_t *) data;
-    if (s_stopping)
+    const prov_action_t action = session_feed(PROV_IN_CRED_FAILED);
+    if (action == PROV_ACT_SUPPRESS)
     {
-      // Raised while we are tearing the session down on purpose. Forwarding it would have the
-      // app erase a perfectly good stored credential and put the QR back up.
+      // Raised while we are tearing the session down on purpose. Forwarding it would have the app
+      // erase a perfectly good stored credential and put the QR back up.
       ESP_LOGI(tag, "Ignoring credential failure during deliberate stop (reason=%d)", reason ? (int) *reason : -1);
       break;
     }
     ESP_LOGW(tag, "Credential verification failed (reason=%d)", reason ? (int) *reason : -1);
-    if (s_callback)
-    {
-      s_callback(BLE_PROV_FAILED, NULL, NULL);
-    }
+    session_emit(action, NULL, NULL);
     break;
   }
 
   case NETWORK_PROV_END:
+  {
     ESP_LOGI(tag, "Provisioning ended");
-    s_active = false;
+    // Resolves the outcome and returns the session to IDLE. Computed before teardown, reported
+    // after it: the callback releases the BT controller and must not run while the manager still
+    // holds protocomm and the BLE scheme.
+    const prov_action_t action = session_feed(PROV_IN_END);
 
     // Deinit here, matching the upstream examples (network_provisioning
     // examples/wifi_prov/main/app_main.c:150). It has to happen before the app callback:
@@ -194,16 +257,14 @@ static void prov_event_handler(void *arg, // NOLINT(readability-non-const-parame
     // to stay alive until the manager was torn down.
     free_sec2_credentials();
 
-    if (s_callback)
-    {
-      // END fires for a cancel exactly as it does for a success. Reporting both as SUCCESS sent
-      // the app down a path that calls ble_provisioning_release_memory(), freeing ~110 KB of BT
-      // RAM for good — a cancelled session would have left the device unprovisionable.
-      s_callback(s_cred_ok ? BLE_PROV_SUCCESS : BLE_PROV_STOPPED, NULL, NULL);
-    }
-    s_cred_ok = false;
-    s_stopping = false;
+    // END fires for a cancel exactly as it does for a success. Reporting both as SUCCESS sent the
+    // app down a path that calls ble_provisioning_release_memory(), freeing ~110 KB of BT RAM for
+    // good — a cancelled session would have left the device unprovisionable. prov_session_step()
+    // owns that distinction now, and a host test asserts no input sequence can reach SUCCESS
+    // without a verified credential behind it.
+    session_emit(action, NULL, NULL);
     break;
+  }
 
   default:
     break;
@@ -230,16 +291,11 @@ esp_err_t ble_provisioning_init(ble_prov_cb_t callback)
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
 esp_err_t ble_provisioning_start(void)
 {
-  if (s_mem_freed)
+  if (session_phase() == PROV_PHASE_UNAVAILABLE)
   {
     ESP_LOGE(tag, "BLE memory already released — cannot start provisioning again");
     return ESP_ERR_INVALID_STATE;
   }
-
-  // Cleared per attempt: a previous session's success must not make this one's END look like a
-  // success too, and a previous cancel must not silence this session's genuine failures.
-  s_cred_ok = false;
-  s_stopping = false;
 
   char device_name[32];
   build_device_name(device_name, sizeof(device_name));
@@ -258,6 +314,9 @@ esp_err_t ble_provisioning_start(void)
     return ret;
   }
   s_initialized = true;
+  // Enters STARTING and clears any previous outcome: a past session's success must not make this
+  // one's END look like a success too, and a past cancel must not silence this one's failures.
+  session_feed(PROV_IN_START_BEGUN);
 
   // Generate SRP6a salt+verifier from MAC-derived password.
   // Buffers are heap-alloc'd — freed in NETWORK_PROV_END handler (or on error below).
@@ -266,6 +325,11 @@ esp_err_t ble_provisioning_start(void)
   if (ret != ESP_OK)
   {
     ESP_LOGE(tag, "esp_srp_gen_salt_verifier failed: %s", esp_err_to_name(ret));
+    // Before the deinit, not after: deinit() emits NETWORK_PROV_END itself, on the default event
+    // loop. Resolving the session first means that END lands on an already-IDLE session and emits
+    // nothing, instead of racing us and reporting a spurious BLE_PROV_STOPPED for a failure the
+    // caller is about to handle itself.
+    session_feed(PROV_IN_START_FAILED);
     network_prov_mgr_deinit();
     s_initialized = false;
     // Both buffers are out-params: a partial failure can leave one of them allocated, and the
@@ -286,27 +350,48 @@ esp_err_t ble_provisioning_start(void)
   if (ret != ESP_OK)
   {
     ESP_LOGE(tag, "network_prov_mgr_start_provisioning failed: %s", esp_err_to_name(ret));
+    session_feed(PROV_IN_START_FAILED); // before the deinit that emits END — see above
     network_prov_mgr_deinit();
     s_initialized = false;
     free_sec2_credentials();
     return ret;
   }
 
-  s_active = true;
+  // Second observer of the same edge, alongside the NETWORK_PROV_START handler. Advancing here
+  // rather than waiting for the event means do_provisioning() cannot see STARTING on a manager
+  // that is already up and call network_prov_mgr_init() a second time; the step function makes it
+  // monotonic, so whichever arrives second is a no-op and cannot revive a finished session.
+  session_emit(session_feed(PROV_IN_START_OK), NULL, NULL);
   return ESP_OK;
 }
 
 esp_err_t ble_provisioning_stop(void) // NOLINT
 {
-  // Gate on s_initialized, not s_active: on the success path NETWORK_PROV_END has already
-  // cleared s_active (and done the teardown itself), while an explicit cancel can arrive with
-  // the manager initialized but not yet advertising. Both cases must be handled.
-  if (!s_initialized && !s_active)
+  // Gate on s_initialized as well as the phase: on the success path NETWORK_PROV_END has already
+  // returned the session to IDLE (and done the teardown itself), while an explicit cancel can
+  // arrive with the manager initialized but not yet advertising. Both cases must be handled.
+  const prov_phase_t phase = session_phase();
+  if (phase == PROV_PHASE_UNAVAILABLE || (!s_initialized && phase == PROV_PHASE_IDLE))
   {
+    // UNAVAILABLE included explicitly: after ble_provisioning_release_memory() the BT controller
+    // is deinitialized and its RAM handed back, so the deinit below would run against a stack that
+    // no longer exists. A BACK press queued on btn_worker before the overlay came down reaches
+    // dismiss_provisioning() after exactly that, so this is a real arrival order, not a defensive
+    // flourish.
     return ESP_OK;
   }
 
-  if (s_active)
+  // A stop is already in flight. This must return before the teardown below: the service is still
+  // winding down, and handing protocomm's shallow copy of the SRP salt/verifier back to the
+  // allocator mid-flight is precisely what panicked the device (see the comment further down).
+  // NETWORK_PROV_END owns the teardown and will arrive on its own.
+  if (phase == PROV_PHASE_STOPPING)
+  {
+    ESP_LOGI(tag, "Stop already in flight — teardown completes on PROV_END");
+    return ESP_OK;
+  }
+
+  if (phase == PROV_PHASE_ADVERTISING)
   {
     // Request only — do NOT tear down here. network_prov_mgr_stop_provisioning() "will initiate
     // a process to stop the service and return" (manager.h:429-434); NETWORK_PROV_END arrives
@@ -315,14 +400,20 @@ esp_err_t ble_provisioning_stop(void) // NOLINT
     // salt/verifier back to the allocator while the service was still winding down — the device
     // panicked about a second afterwards. The END handler owns the whole teardown.
     ESP_LOGI(tag, "Stopping BLE provisioning (teardown completes on PROV_END)");
-    s_stopping = true;
+    session_feed(PROV_IN_STOP_REQUESTED);
     network_prov_mgr_stop_provisioning();
     return ESP_OK;
   }
 
-  // Initialized but never advertised — a start() that failed partway. deinit() stops the service
-  // and emits NETWORK_PROV_END itself (manager.h:436-438), so clear the flag first and let the
-  // handler skip its own deinit.
+  // Initialized but never advertised — a cancel landing between network_prov_mgr_init() and the
+  // service coming up. network_prov_mgr_stop_provisioning() is not usable here: there is no
+  // running service for it to stop. deinit() stops and emits NETWORK_PROV_END itself
+  // (manager.h:436-438), so clear the flag first and let the handler skip its own deinit.
+  //
+  // The phase still moves to STOPPING before deinit, so a CRED_FAIL raised by this teardown is
+  // suppressed rather than erasing the stored credential, and the END it triggers resolves the
+  // session exactly as a normal cancel does.
+  session_feed(PROV_IN_STOP_REQUESTED);
   s_initialized = false;
   network_prov_mgr_deinit();
   free_sec2_credentials();
@@ -330,12 +421,9 @@ esp_err_t ble_provisioning_stop(void) // NOLINT
   return ESP_OK;
 }
 
-bool ble_provisioning_is_active(void)
+prov_phase_t ble_provisioning_session_phase(void)
 {
-  // A stop that has been requested but not yet confirmed by NETWORK_PROV_END is already "not
-  // active" as far as callers are concerned. Reporting it as active let do_provisioning() take
-  // the "just re-show the QR" branch against a manager that was busy tearing itself down.
-  return s_active && !s_stopping;
+  return session_phase();
 }
 
 void ble_provisioning_get_device_name(char *buf, size_t len)
@@ -350,7 +438,7 @@ void ble_provisioning_get_password(char *buf, const size_t len)
 
 void ble_provisioning_release_memory(void)
 {
-  if (s_mem_freed)
+  if (session_phase() == PROV_PHASE_UNAVAILABLE)
   {
     return;
   }
@@ -363,6 +451,8 @@ void ble_provisioning_release_memory(void)
   esp_bt_controller_disable();
   esp_bt_controller_deinit();
   esp_bt_mem_release(ESP_BT_MODE_BLE);
-  s_mem_freed = true;
+  // The firmware's one irreversible transition, and it goes through the same step function as
+  // everything else so a host test can assert nothing ever leaves the phase it lands in.
+  session_feed(PROV_IN_MEM_RELEASED);
   ESP_LOGI(tag, "BLE memory released. Free heap: %lu bytes", (unsigned long) esp_get_free_heap_size());
 }
