@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.5.0](https://github.com/fugo101/zen-clock/compare/v0.4.2...v0.5.0) (2026-08-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* **settings:** collapse NVS access behind one descriptor table ([#91](https://github.com/fugo101/zen-clock/issues/91))
+
+### Bug Fixes
+
+* **settings:** clamp timezone offset on read, write and apply ([#90](https://github.com/fugo101/zen-clock/issues/90)) ([bf654f0](https://github.com/fugo101/zen-clock/commit/bf654f008a4a7f879e537cd3d092f6fa38cd87e2))
+* **ui:** publish the WiFi status icon instead of painting it under a lock ([#93](https://github.com/fugo101/zen-clock/issues/93)) ([ca136fd](https://github.com/fugo101/zen-clock/commit/ca136fdfaece667a9adfadf22c860fded6238ab4))
+
+
+### Refactoring
+
+* **backoff:** extract the shared retry policy into one module ([#85](https://github.com/fugo101/zen-clock/issues/85)) ([c6d8516](https://github.com/fugo101/zen-clock/commit/c6d85166401138907747fe80ab1c6418d740990d))
+* **ble:** name the provisioning session, replace five flags with a tested machine ([#99](https://github.com/fugo101/zen-clock/issues/99)) ([f91f5d2](https://github.com/fugo101/zen-clock/commit/f91f5d2148fd73aa9c97704dcba68b14743fce8f))
+* **bsp:** put button input policy behind a pure decision seam ([#88](https://github.com/fugo101/zen-clock/issues/88)) ([82fc249](https://github.com/fugo101/zen-clock/commit/82fc24963d711b3888575c01053e6382ad98c3cd))
+* derive the battery icon and brightness clamp from one view ([#89](https://github.com/fugo101/zen-clock/issues/89)) ([1b96ecb](https://github.com/fugo101/zen-clock/commit/1b96ecb132d9ea43fe25e5dff6edeadedad1e6a5))
+* **settings:** collapse NVS access behind one descriptor table ([#91](https://github.com/fugo101/zen-clock/issues/91)) ([ed873c9](https://github.com/fugo101/zen-clock/commit/ed873c9c55cc13107ea1eb4de87286b50fc44e87))
+* **ui:** drive the settings screen from the descriptor table ([#92](https://github.com/fugo101/zen-clock/issues/92)) ([93d75ba](https://github.com/fugo101/zen-clock/commit/93d75ba53569c18b76c630a266ab02f579c906f7))
+* **ui:** publish the provisioning overlay and the MicroLink handle ([#95](https://github.com/fugo101/zen-clock/issues/95)) ([1a89d64](https://github.com/fugo101/zen-clock/commit/1a89d64a1049fe7555f00a11487406e256a0ded2))
+* **ui:** publish the SNTP and Tailscale status icons ([#94](https://github.com/fugo101/zen-clock/issues/94)) ([7981583](https://github.com/fugo101/zen-clock/commit/7981583f0d4a6205f0a825adfacaa0f7f7ca8b99))
+* **wifi:** move connect-time work off the WiFi task ([#96](https://github.com/fugo101/zen-clock/issues/96)) ([bbece22](https://github.com/fugo101/zen-clock/commit/bbece22539d7ff6bc4ecc44564e3a61bd9ec5a4a))
+* **wifi:** state wifi_manager_stop()'s contract in its public header ([#87](https://github.com/fugo101/zen-clock/issues/87)) ([3dd3b47](https://github.com/fugo101/zen-clock/commit/3dd3b47d232f95c16013f9b90fdb45b5fb8da9eb))
+
 ## [0.4.2](https://github.com/fugo101/zen-clock/compare/v0.4.1...v0.4.2) (2026-08-21)
 
 
