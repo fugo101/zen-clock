@@ -423,7 +423,10 @@ static bool do_dns_probe(void)
       ESP_LOGI(tag, "DNS probe OK (attempt %d/%d)", probe + 1, DNS_PROBE_MAX);
       return true;
     }
-    ESP_LOGD(tag, "DNS probe %d/%d failed", probe + 1, DNS_PROBE_MAX);
+    // INFO because ESP_LOGD is compiled out (see CLAUDE.md, Non-Architectural Notes): a failing
+    // probe spends up to (DNS_PROBE_MAX - 1) × DNS_PROBE_INTERVAL_MS here *before*
+    // WIFI_MGR_CONNECTED fires, and nothing else in the log accounts for it (#45).
+    ESP_LOGI(tag, "DNS probe %d/%d failed", probe + 1, DNS_PROBE_MAX);
 
     // Wait instead of vTaskDelay so a stop or a disconnect cuts the pause short. A plain delay
     // here meant wifi_manager_stop() had to sit through up to DNS_PROBE_INTERVAL_MS per attempt
@@ -528,6 +531,11 @@ static void wifi_task(void *arg) // NOLINT(readability-non-const-parameter)
         ESP_LOGI(tag, "Already connected to \"%s\" — skipping scan+connect", s_ssid);
         strncpy(s_connected_ssid, s_ssid, WIFI_SSID_MAX_LEN - 1);
         s_connected_ssid[WIFI_SSID_MAX_LEN - 1] = '\0';
+        // The AP hint is saved once, on entry to CONNECTED, for both paths. This one has no scan
+        // to fill s_match_ap, so hand it the association we already have — otherwise the hint
+        // stays empty until the *second* successful connect, and the first cold boot after
+        // provisioning pays the full aggregated scan for an AP the device already knew (#100).
+        s_match_ap = ap_info;
         xEventGroupClearBits(s_event_group, BIT_GOT_IP | BIT_DISCONNECTED);
         set_state(WIFI_ST_VERIFYING);
         break;
@@ -585,14 +593,20 @@ static void wifi_task(void *arg) // NOLINT(readability-non-const-parameter)
         break;
       }
 
-      // Find AP matching stored SSID (list already sorted by RSSI descending)
+      // Find AP matching stored SSID (list already sorted by RSSI descending, so the first match
+      // is the strongest). match_count is logged, not acted on: it is the only way to tell a
+      // multi-BSSID SSID from a single-AP one without a recompile (#45).
       int match_idx = -1;
+      int match_count = 0;
       for (int i = 0; i < ap_count; i++)
       {
         if (strcmp((const char *) s_ap_list[i].ssid, s_ssid) == 0)
         {
-          match_idx = i;
-          break;
+          if (match_idx < 0)
+          {
+            match_idx = i;
+          }
+          match_count++;
         }
       }
 
@@ -604,7 +618,8 @@ static void wifi_task(void *arg) // NOLINT(readability-non-const-parameter)
         break;
       }
 
-      ESP_LOGI(tag, "Found \"%s\" (RSSI: %d, CH: %d)", s_ssid, s_ap_list[match_idx].rssi, s_ap_list[match_idx].primary);
+      ESP_LOGI(tag, "Found \"%s\" (RSSI: %d, CH: %d) — %d BSSID(s) match", s_ssid, s_ap_list[match_idx].rssi,
+               s_ap_list[match_idx].primary, match_count);
       s_match_ap = s_ap_list[match_idx];
       set_state(WIFI_ST_CONNECTING);
       break;
@@ -620,7 +635,6 @@ static void wifi_task(void *arg) // NOLINT(readability-non-const-parameter)
       if (try_connect_candidate(&s_match_ap, s_pass))
       {
         ESP_LOGI(tag, "Connected to \"%s\"!", s_ssid);
-        wifi_cred_save_ap_hint(s_match_ap.bssid, s_match_ap.primary);
         set_state(WIFI_ST_VERIFYING);
       }
       else if (stop_requested())
@@ -668,6 +682,17 @@ static void wifi_task(void *arg) // NOLINT(readability-non-const-parameter)
       // network.
       set_state(WIFI_ST_CONNECTED);
       fire_event(WIFI_MGR_CONNECTED);
+
+      // The single hint save site, covering both routes into VERIFYING: the scan path (s_match_ap
+      // from the scan) and the post-provisioning shortcut (s_match_ap from esp_wifi_sta_get_ap_info).
+      // Here rather than on the CONNECTING success path so the hint only ever records an AP that
+      // actually reached CONNECTED, and *above* the internet check below — a LAN-only AP is still
+      // exactly the AP to fast-scan back to next boot.
+      //
+      // After fire_event(), not before: a genuine write is a flash commit, and everything between
+      // the last BIT_STOP check and here is time wifi_manager_stop() cannot interrupt. Ordering it
+      // second leaves both that window and the CONNECTED notification latency exactly as they were.
+      wifi_cred_save_ap_hint(s_match_ap.bssid, s_match_ap.primary);
 
       if (!internet_ok)
       {

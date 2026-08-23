@@ -56,6 +56,10 @@ _Avoid_: Success flag, provisioning result
 The specific WiFi manager outcome (`WIFI_MGR_NO_CRED`) that is the only trigger for starting provisioning — every other failure mode instead schedules a backoff reconnect, because losing coverage must never look like an unprovisioned device.
 _Avoid_: Connection failure, disconnected
 
+**AP hint**:
+The remembered identity — BSSID and channel — of the access point the device last actually reached, used to skip the all-channel scan on the next connect in favour of a single targeted one. It records where the device *got to*, not what it was told to look for, so it is written on reaching the connected state and discarded the moment a targeted scan fails to find it there. Being a fact about the last success rather than an event, re-asserting an unchanged one changes nothing.
+_Avoid_: Cached BSSID, last known AP, fast-scan config
+
 **Connected-but-no-internet**:
 The WiFi manager state where the device has a real association and IP lease but a DNS probe failed — treated as usable (the device is still a LAN-connected clock), painted as a distinct status-bar color, and cleared only by a successful NTP sync.
 _Avoid_: Offline, degraded connection
