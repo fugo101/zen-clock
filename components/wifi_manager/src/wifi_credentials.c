@@ -123,6 +123,17 @@ esp_err_t wifi_manager_clear_credential(void)
 
 void wifi_cred_save_ap_hint(const uint8_t *bssid, uint8_t channel)
 {
+  // Idempotent by design. NVS is append-only — updating a key appends a new entry and marks the
+  // old one erased — and the caller sits on the VERIFYING → CONNECTED transition, which every
+  // backoff reconnect passes through. Skipping an identical write means no future caller has to
+  // reason about how often that transition fires before adding a call.
+  uint8_t cur_bssid[6];
+  uint8_t cur_channel = 0;
+  if (wifi_cred_load_ap_hint(cur_bssid, &cur_channel) && cur_channel == channel && memcmp(cur_bssid, bssid, 6) == 0)
+  {
+    return;
+  }
+
   nvs_handle_t h;
   if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK)
   {
@@ -132,7 +143,9 @@ void wifi_cred_save_ap_hint(const uint8_t *bssid, uint8_t channel)
   nvs_set_u8(h, NVS_KEY_CHANNEL, channel);
   nvs_commit(h);
   nvs_close(h);
-  ESP_LOGD(tag, "AP hint saved: ch=%d bssid=%02X:%02X:%02X:%02X:%02X:%02X", channel, bssid[0], bssid[1], bssid[2],
+  // INFO because ESP_LOGD is compiled out (see CLAUDE.md, Non-Architectural Notes): this line is
+  // the only on-device evidence the hint was written, and #100 is unverifiable off-device.
+  ESP_LOGI(tag, "AP hint saved: ch=%d bssid=%02X:%02X:%02X:%02X:%02X:%02X", channel, bssid[0], bssid[1], bssid[2],
            bssid[3], bssid[4], bssid[5]);
 }
 

@@ -431,6 +431,25 @@ events are suppressed while `stop_requested()`, otherwise a deliberate stop can 
 fires later during BLE provisioning and takes the radio back. A 32-char SSID with no NUL terminator
 is correct — `wifi_cfg.sta.ssid` is `uint8_t[32]`, the 802.11 maximum, and the driver reads it bounded.
 
+**AP hint:** `wifi_cred_save_ap_hint()` has exactly **one** call site, on the `VERIFYING →
+CONNECTED` transition, and it must stay that way. It used to sit on the `CONNECTING` success path,
+which the post-provisioning shortcut in IDLE skips entirely — so the hint went unwritten until the
+*second* successful connect and the first cold boot after provisioning paid the full aggregated
+scan for an AP the device already knew. That shortcut now stashes `esp_wifi_sta_get_ap_info()` into
+`s_match_ap` so both routes into VERIFYING reach the one save. The call sits **above** the
+`internet_ok` check (a LAN-only AP is still the AP to fast-scan back to) and **below**
+`fire_event(WIFI_MGR_CONNECTED)` (a genuine write is a flash commit, and everything between the
+last `BIT_STOP` check and it is time `wifi_manager_stop()` cannot interrupt). The function is
+idempotent by design, so the reconnects that also land there cost nothing — don't "optimise" that
+guard away by hoisting a condition to the call site, which is how the write went missing before.
+
+**Log levels in `wifi_manager`:** `CONFIG_LOG_MAXIMUM_LEVEL=3` compiles out `ESP_LOGD` entirely, so
+a diagnostic at DEBUG is a diagnostic that does not exist on hardware. The component deliberately
+has none left. Two lines are at INFO specifically because they are the only evidence for things
+nothing else reports — `"AP hint saved"` (proof the write happened) and `"DNS probe N/M failed"`
+(the up-to-8 s that elapses *before* `WIFI_MGR_CONNECTED` fires). Don't demote either to DEBUG for
+being noisy.
+
 **BLE provisioning:** the session lifecycle is one enumerated phase plus a latched outcome, in the
 pure `prov_session.c` (host-tested; symlinked into `test/test_pure_logic/`). It replaced four
 booleans, and `ble_provisioning_session_phase()` replaced an `is_active()` that returned
