@@ -304,10 +304,10 @@ static int rssi_compare(const void *a, const void *b) // NOLINT(misc-unused-para
 bool wifi_cred_load(char *out_ssid, size_t ssid_len, char *out_pass, size_t pass_len)
 ```
 ```c
-// arg is used via the cast below
-static void IRAM_ATTR gpio_isr_handler(void *arg) // NOLINT(misc-unused-parameters, ...)
+// The button id and event are packed into usr_data at registration
+static void button_cb(void *arg, void *usr_data) // NOLINT(misc-unused-parameters)
 {
-  int btn_id = (int) (intptr_t) arg;
+  const uintptr_t packed = (uintptr_t) usr_data;
   ...
 }
 ```
@@ -331,8 +331,10 @@ static void IRAM_ATTR gpio_isr_handler(void *arg)
 `readability-identifier-naming`'s case-style check treats `IRAM_ATTR` (ESP-IDF's placement
 attribute macro, `__attribute__((section(...)))`) as if it were a variable named `IRAM_ATTR`
 needing `lower_case`, because of where it sits syntactically between the return type and the
-function name. Only one call site in the project uses `IRAM_ATTR` on a definition
-(`components/bsp/src/bsp_buttons.c`); if more appear, they need the same suppression.
+function name. **No call site in the project uses `IRAM_ATTR` on a definition today** — the one
+that did (`gpio_isr_handler` in `components/bsp/src/bsp_buttons.c`) went away when button timing
+moved to `espressif/button`. The quirk is kept documented because the next ISR written here will
+hit it again; the snippet above is historical, not a live reference.
 
 ---
 

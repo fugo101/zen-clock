@@ -125,9 +125,11 @@ pass, and a pass that finds the link already down does nothing.
 
 **Worker task (`btn_worker`):** deferred nav work (`do_reset_wifi`, `dismiss_provisioning`, and the
 callback `nav_handle_action()` returns) runs on a dedicated FreeRTOS task, not inline in
-`on_button_press`. Running it inline used to stall `bsp_buttons.c`'s `held_ms` counter, which made
-the two-button deep-sleep combo unreachable while a blocking action was running — a button press
-mid-action now always lands instead of being silently dropped.
+`on_button_press`. Running it inline blocks the only task that dispatches button events, so every
+press during a blocking action waits behind it — the two-button deep-sleep combo was unreachable
+for the whole reset. Press *timing* is no longer at risk (`espressif/button` measures it in the
+esp_timer task), but a combo the user has finished holding by the time the queue drains is a combo
+they did not get.
 
 ### Components
 
@@ -136,7 +138,7 @@ mid-action now always lands instead of being silently dropped.
 | `components/backoff/`          | Shared retry-pacing policy (30 s → ×2 → 300 s, reset on success). Pure — no ESP-IDF headers — so it builds for the host-side `[env:native]` tests; symlinked into `test/test_pure_logic/`. Used by the WiFi reconnect timer (`src/app_handlers.c`) and the NTP re-sync loop |
 | `components/battery_view/`     | Pure mapping from one `bsp_battery_read()` reading to everything derived from it — icon symbol, tint, blink, label text, the low-battery flag, and the edge-detection step the brightness clamp arms from. No LVGL and no ESP-IDF headers, so it builds for the host-side `[env:native]` tests; symlinked into `test/test_pure_logic/`. Two adapters: `status_bar.c` paints it, `src/app_handlers.c` clamps off it |
 | `components/input_policy/`     | Pure decision behind `on_button_press()`: emergency IO14 hold, the two-button deep-sleep combo, the button→`nav_action_t` mapping, and the QR-overlay swallow/dismiss rule. Two pure stages: `input_policy_decide()` resolves the escape hatches, `input_policy_apply_overlay()` guards a NAV outcome. No ESP-IDF headers — symlinked into `test/test_pure_logic/` alongside its `nav.h` |
-| `components/bsp/`              | Board Support: display init, battery (GPIO4/ADC1_CH3), backlight (LEDC), buttons                                                                                                                                           |
+| `components/bsp/`              | Board Support: display init, battery (GPIO4/ADC1_CH3), backlight (LEDC), buttons (press timing via `espressif/button`, see below)                                                                                          |
 | `components/ui/`               | LVGL UI — modular widgets, see below                                                                                                                                                                                       |
 | `components/wifi_manager/`     | WiFi state machine: IDLE → SCANNING → CONNECTING → LINK_UP → CONNECTED. Owns the link only — it makes no claim about internet reachability (ADR-0008)                                                                       |
 | `components/ble_provisioning/` | BLE WiFi provisioning via `espressif/network_provisioning`. `prov_session.c` is the session lifecycle (phase + latched outcome) as a pure transition function — no ESP-IDF headers, so it builds for the host-side `[env:native]` tests; symlinked into `test/test_pure_logic/`. It owns the `BLE_PROV_SUCCESS`-vs-`STOPPED` distinction that gates the one-way 110 KB memory release |
@@ -352,6 +354,9 @@ Managed components (in `managed_components/`):
 - `espressif__esp_lvgl_port` — LVGL port for ESP-IDF
 - `espressif__network_provisioning` ^1.2.4 — BLE provisioning manager
 - `espressif__cjson` — JSON (used by provisioning QR and by MicroLink's control-plane parsing)
+- `espressif__button` ^4.2.0 — GPIO button debounce + press timing. Declared in
+  `components/bsp/idf_component.yml`, not `src/`. The registry labels 4.2.0's license `Custom`;
+  the package's own `license.txt` is verbatim Apache-2.0 — the label is wrong, not the terms
 - `lvgl__lvgl` — LVGL graphics library
 - `fugo101__microlink` ^3.0.0 — Tailscale VPN client. Pulls in `fugo101__wireguard_lwip` ^1.0.0
   transitively — never declare it directly in `src/idf_component.yml`
@@ -359,7 +364,9 @@ Managed components (in `managed_components/`):
   fork of [smartalock/wireguard-lwip](https://github.com/smartalock/wireguard-lwip) (Daniel Hope,
   BSD-3-Clause) — see `THIRD_PARTY.md`
 
-Declared in `src/idf_component.yml`. `REQUIRES microlink` / `PRIV_REQUIRES wireguard_lwip` in the
+Declared in `src/idf_component.yml`, except `espressif/button`, which belongs to the one component
+that uses it (`components/bsp/idf_component.yml`) — same pattern as `network_provisioning` under
+`components/ble_provisioning/`. `REQUIRES microlink` / `PRIV_REQUIRES wireguard_lwip` in the
 consuming `CMakeLists.txt` files use the **short** component name, not the registry-mangled one
 (`fugo101__microlink`) — the component manager rewrites this at build time regardless of source,
 so don't "fix" it.
@@ -485,16 +492,59 @@ firmware builds with `-Werror=format-truncation` and GCC cannot otherwise bound 
 `_Static_assert`s in `app_handlers.c` fail the build if the two ever drift. The overlay guard is
 a *second* pure stage on purpose: `prov_screen_is_visible()` needs the LVGL lock, and
 `lvgl_port_lock(0)` waits `portMAX_DELAY`, so resolving the emergency hold and the sleep combo
-first keeps both escape hatches off the lock — parking the button task behind a repaint also
-stalls `bsp_buttons.c`'s `held_ms`, which is what makes the combo unreachable to begin with. For
+first keeps both escape hatches off the lock — parking the button task behind a repaint stops it
+dispatching anything, which is what makes the combo unreachable to begin with. For
 the same reason `gpio_get_level()` on the other button is sampled *before* anything that can
 block: the combo means "still down as this one fires LONG", and a release during a repaint would
 turn it into a stray SELECT. Applying the overlay stage unconditionally would be correct, just
 needlessly blocking. The sleep combo is declined while the QR is up by `deep_sleep`'s inhibit
 callback, not by the policy.
 
-**Buttons:** the ISR passes `NULL` for `pxHigherPriorityTaskWoken`. This is legal (FreeRTOS guards
-it) and unobservable here since the very next thing the task does is a 50ms debounce delay.
+**Buttons:** timing comes from `espressif/button`; `bsp_buttons.c` is the adapter, and the queue and
+task inside it are load-bearing, not leftovers. iot_button invokes every callback from one shared
+periodic `esp_timer`, in the esp_timer task, and forbids blocking there — while `on_button_press()`
+takes `lvgl_port_lock(0)`, which waits `portMAX_DELAY`. Calling the app callback from the component's
+context would park the shared timer task behind a screen repaint and take the 10 s microlink poll
+down with it. The callbacks only enqueue. Not `btn_worker` either: that queue carries
+`do_reset_wifi()`, which blocks for seconds.
+
+SHORT maps to `BUTTON_SINGLE_CLICK`, **not** `BUTTON_PRESS_UP` — releasing a long press emits
+`PRESS_UP` too (`iot_button.c:305`), so a `PRESS_UP` mapping would fire a phantom SHORT after every
+long press. `SINGLE_CLICK` only leaves the repeat-check path and cannot. LONG and EMERGENCY are two
+`BUTTON_LONG_PRESS_START` registrations on IO14 with different `press_time`. Registration order is
+irrelevant — `iot_button_register_cb()` inserts sorted by `press_time`. The constraint that *is*
+load-bearing: the lowest threshold must equal `CONFIG_BUTTON_LONG_PRESS_TIME_MS`, because the first
+callback only fires when `cb_info[0].press_time == long_press_ticks * TICKS_INTERVAL`
+(`iot_button.c:161`). Add a threshold below 800 ms without moving the Kconfig value and the 800 ms
+LONG silently stops firing.
+
+`on_button_press()` still samples the other button with `gpio_get_level()`, and must keep doing so.
+`iot_button_get_key_level()` looks like the tidier call and is **inverted**: `button_gpio.c:38-43`
+normalises against `active_level` and returns 1 = pressed, while `input_policy`'s `PIN_PRESSED` is 0.
+Swapping it in makes the sleep combo fire on release instead of on hold.
+
+Four `CONFIG_BUTTON_*` values (period 10 ms, debounce 5 ticks = 50 ms, short 50 ms, long 800 ms) are
+the button feel of the whole device, and they live in a sdkconfig the component manager generates —
+the same path that can silently reset `CONFIG_ML_*` (see above). A reset here still compiles and
+still runs, just with 10 ms debounce and a 180 ms wait before every SHORT, so `_Static_assert`s in
+`bsp_buttons.c` turn it into a build failure. Change a value there and the assert next to it too.
+
+The component's timer runs at `CONFIG_BUTTON_PERIOD_TIME_MS` **forever**, idle or not — 100 CPU
+wakeups/second where the old GPIO-ISR driver did nothing at all. `enable_power_save` is the fix and
+is deliberately off: it installs GPIO wakeup on GPIO0/GPIO14, the exact pads `deep_sleep` owns an
+ext1 condition and `rtc_gpio_pullup_en()` on (ADR-0003), where a bug only reproduces after a sleep
+cycle. Tracked as #104.
+
+One invariant did invert, and it is latent rather than broken: the emergency hold and the sleep
+combo used to keep their own clock on a dedicated task, so they advanced even if `esp_timer` was
+starved. They are now measured in the shared esp_timer task and stop advancing whenever any
+`esp_timer` callback runs long. Nothing in the tree blocks there today (`reconnect_timer_cb`
+notifies and returns, `ts_poll_cb` reads state), which is precisely why a future callback that
+does block would take the escape hatches down with it.
+
+Holding both buttons *past* the sleep fade wakes the device immediately, and that is ext1, not a
+bug: LONG fires at 800 ms, the fade runs 1500 ms, so `esp_deep_sleep_start()` runs ~2.3 s in, and
+`ESP_EXT1_WAKEUP_ANY_LOW` is already satisfied by a pad still held low. Release within the fade.
 
 **Build tooling:** `board_build.esp-idf.sdkconfig_path` *replaces* the sdkconfig (`-DSDKCONFIG=`); it
 does not layer a fragment on top of it, and `sdkconfig_extra` does not exist — PlatformIO silently

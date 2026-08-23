@@ -13,6 +13,20 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 0.2.2
+  espressif/button:
+    component_hash: ad64de1d1b8aa139564810a8519b2f1ac275a560a512479ee94c1b6983469d4b
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: '*'
+    - name: idf
+      require: private
+      version: '>=4.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 4.2.0
   espressif/cjson:
     component_hash: e788323270d90738662d66fffa910bfe1fba019bba087f01557e70c40485b469
     dependencies:
@@ -104,11 +118,12 @@ dependencies:
     version: 9.5.0
 direct_dependencies:
 - espressif/adc_battery_estimation
+- espressif/button
 - espressif/esp_lvgl_port
 - espressif/network_provisioning
 - fugo101/microlink
 - idf
 - lvgl/lvgl
-manifest_hash: 7a723a7dd5bd2c17b55d1bd8662887d34e0df7165ae9a2457bb7224169c04032
+manifest_hash: a6c792066587ca2bca80fde71d13d3d2d9ec3cede21ce5b25585d255c60bf341
 target: esp32s3
 version: 2.0.0
