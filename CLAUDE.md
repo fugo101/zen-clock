@@ -429,6 +429,12 @@ Smaller gotchas that don't rise to an ADR (not hard-to-reverse architectural dec
 to "fix" back into a bug if you don't know why they're there. Architectural decisions live in
 `docs/adr/` instead — see Domain docs below.
 
+**Reconnect coverage:** `BLE_PROV_SUCCESS` and `BLE_PROV_STOPPED` both restart WiFi by hand, and
+a failure there arms `RECONNECT_BUSY_RETRY_S` rather than only logging. Until #98 that hole was
+covered by accident — the stale pre-provisioning timer nobody had cancelled was what brought the
+device back. Cancelling it without arming this would have traded a rare self-healing bug for a rare
+offline-until-reboot one.
+
 **Backoff:** `backoff_next_s()` takes an `armed` flag on purpose — `schedule_reconnect()` in
 `app_handlers.c` only consumes a step when `esp_timer_start_once()` actually succeeded, so a burst
 of failure events can't inflate the delay while leaving no retry pending. `RECONNECT_BUSY_RETRY_S`
@@ -441,7 +447,14 @@ failure and schedule a reconnect against the app's own deliberate stop. `s_task_
 "genuinely blocked on the task notify" from IDLE-in-passing (the state the task also transits through
 between `ulTaskNotifyTake()` and `set_state()`); don't reintroduce an early return there. Failure
 events are suppressed while `stop_requested()`, otherwise a deliberate stop can arm a reconnect that
-fires later during BLE provisioning and takes the radio back. A 32-char SSID with no NUL terminator
+fires later during BLE provisioning and takes the radio back. That guard covers only the stop
+arming a *new* retry — it says nothing about one armed **before** provisioning started by a genuine
+WiFi failure, which used to survive into the session and fire mid-QR (#98). Two things now stop it:
+each of the three paths that hands the radio to BLE disarms the timer before `wifi_manager_stop()`
+(`cancel_reconnect()` for the two user actions, `stop_reconnect_timer()` for `WIFI_MGR_NO_CRED`,
+which must not rewind the ladder it sits on), and `reconnect_timer_cb()` refuses to start WiFi at
+all while `prov_session_holds_radio()` is true — the guard is what survives someone adding a fourth
+path. A 32-char SSID with no NUL terminator
 is correct — `wifi_cfg.sta.ssid` is `uint8_t[32]`, the 802.11 maximum, and the driver reads it bounded.
 
 **AP hint:** `wifi_cred_save_ap_hint()` has exactly **one** call site, on the `LINK_UP → CONNECTED`

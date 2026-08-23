@@ -14,6 +14,7 @@
 #include "settings.h"
 #include "status_bar.h"
 #include "ble_provisioning.h"
+#include "prov_session.h"
 #include "prov_screen.h"
 #include "nav.h"
 #include "input_policy.h"
@@ -90,6 +91,20 @@ static bool schedule_reconnect_in(uint32_t delay_s);
 static void reconnect_timer_cb(void *arg)
 {
   (void) arg;
+
+  // Belt-and-braces for #98, not the fix for it. What actually closes #98 is the disarm at each
+  // of the three paths that hands the radio to network_prov_mgr — do not delete those as
+  // redundant. This guard cannot substitute for them: it samples the phase on entry, so a session
+  // that starts *after* the sample still gets its radio taken. What it does buy is coverage for a
+  // fourth such path added later that forgets to disarm. Re-armed rather than dropped: the
+  // session will end, and this is the only thing keeping a retry pending until it does.
+  if (prov_session_holds_radio(ble_provisioning_session_phase()))
+  {
+    ESP_LOGI(tag, "Reconnect deferred — BLE provisioning holds the radio");
+    schedule_reconnect_in(RECONNECT_BUSY_RETRY_S);
+    return;
+  }
+
   const esp_err_t ret = wifi_manager_start();
   if (ret != ESP_OK)
   {
@@ -139,12 +154,23 @@ static void schedule_reconnect(void)
   s_reconnect_backoff_s = backoff_next_s(s_reconnect_backoff_s, armed);
 }
 
-static void cancel_reconnect(void)
+// Disarms a pending retry without touching the backoff ladder. Used where the *machine* takes the
+// radio away rather than the user: WIFI_MGR_NO_CRED sits on the failure loop that
+// start_provisioning_or_recover()'s fallback re-arms, so resetting the ladder there would pin the
+// retry at BACKOFF_START_S forever instead of letting it escalate to the ceiling.
+static void stop_reconnect_timer(void)
 {
   if (s_reconnect_timer)
   {
     esp_timer_stop(s_reconnect_timer);
   }
+}
+
+// Disarms and rewinds the ladder. For the deliberate paths — a successful connect, and the two
+// user actions that hand the radio to BLE — where the next attempt deserves a full 30s → 300s run.
+static void cancel_reconnect(void)
+{
+  stop_reconnect_timer();
   s_reconnect_backoff_s = BACKOFF_START_S;
 }
 
@@ -491,6 +517,9 @@ static void start_provisioning_or_recover(void)
 
 static void do_reset_wifi(void)
 {
+  // Before the stop, not after: between the two, a retry armed by an earlier failure can still
+  // fire and take the radio straight back.
+  cancel_reconnect();
   wifi_manager_stop();
   wifi_manager_clear_credential();
   start_provisioning_or_recover();
@@ -507,6 +536,7 @@ static void do_provisioning(void)
   if (ble_provisioning_session_phase() != PROV_PHASE_ADVERTISING)
   {
     ESP_LOGI(tag, "Starting provisioning (credential kept)");
+    cancel_reconnect(); // see do_reset_wifi() — must precede the stop
     wifi_manager_stop();
     start_provisioning_or_recover();
     return; // BLE_PROV_STARTED puts the QR up
@@ -734,7 +764,12 @@ void on_ble_prov_event(const ble_prov_event_t event, const char *ssid, const cha
     const esp_err_t ret = wifi_manager_start();
     if (ret != ESP_OK)
     {
-      ESP_LOGW(tag, "wifi_manager_start after provisioning: %s", esp_err_to_name(ret));
+      // Nothing else re-arms here, and the stale timer that used to cover this by accident is now
+      // cancelled on the way in. Short delay, not a backoff step: this is almost always
+      // ESP_ERR_INVALID_STATE from a teardown that has not unwound yet, which is not a failed
+      // attempt.
+      ESP_LOGW(tag, "wifi_manager_start after provisioning: %s — retrying shortly", esp_err_to_name(ret));
+      schedule_reconnect_in(RECONNECT_BUSY_RETRY_S);
     }
     break;
   }
@@ -751,7 +786,9 @@ void on_ble_prov_event(const ble_prov_event_t event, const char *ssid, const cha
     const esp_err_t ret = wifi_manager_start();
     if (ret != ESP_OK)
     {
-      ESP_LOGW(tag, "wifi_manager_start after cancel: %s", esp_err_to_name(ret));
+      // As on the success path above: without this the device sits offline until it is rebooted.
+      ESP_LOGW(tag, "wifi_manager_start after cancel: %s — retrying shortly", esp_err_to_name(ret));
+      schedule_reconnect_in(RECONNECT_BUSY_RETRY_S);
     }
     break;
   }
@@ -802,6 +839,9 @@ void on_wifi_event(const wifi_manager_event_t event)
   case WIFI_MGR_NO_CRED:
     ESP_LOGW(tag, "No WiFi credential stored — starting BLE provisioning");
     // Invariant 3: this runs on the wifi task, so the stop is only requested, not awaited.
+    // Timer disarmed but the ladder left alone — this is the machine noticing a missing
+    // credential, not the user asking for provisioning. See stop_reconnect_timer().
+    stop_reconnect_timer();
     wifi_manager_stop();
     set_link_status(WIFI_STATUS_PROVISIONING);
     start_provisioning_or_recover();

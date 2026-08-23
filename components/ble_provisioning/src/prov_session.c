@@ -17,6 +17,23 @@ prov_session_t prov_session_initial(void)
   return s;
 }
 
+bool prov_session_holds_radio(const prov_phase_t phase)
+{
+  // Enumerated rather than expressed as "not IDLE and not UNAVAILABLE" so that adding a phase is a
+  // -Wswitch build failure here instead of a silent verdict.
+  switch (phase)
+  {
+  case PROV_PHASE_STARTING:
+  case PROV_PHASE_ADVERTISING:
+  case PROV_PHASE_STOPPING:
+    return true;
+  case PROV_PHASE_IDLE:
+  case PROV_PHASE_UNAVAILABLE:
+    return false;
+  }
+  return false;
+}
+
 prov_step_t prov_session_step(const prov_session_t state, const prov_input_t input)
 {
   // Terminal first, and unconditionally: once the BLE controller's memory is gone there is nothing

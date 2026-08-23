@@ -118,6 +118,20 @@ extern "C"
    */
   prov_step_t prov_session_step(prov_session_t state, prov_input_t input);
 
+  /**
+   * @brief Whether a session in this phase owns the radio.
+   *
+   * True for the three live phases (STARTING, ADVERTISING, STOPPING) — network_prov_mgr has the
+   * radio and nothing else may start WiFi underneath it.
+   *
+   * False for PROV_PHASE_UNAVAILABLE, and that is the whole reason this is a function rather than
+   * a comparison at the call site: UNAVAILABLE reads like the most dead phase of the five, but it
+   * means the BLE controller's memory has been released, so the radio belongs to WiFi permanently.
+   * A call site that spells this `phase != PROV_PHASE_IDLE` blocks every WiFi reconnect for the
+   * rest of the device's uptime after the first successful provisioning.
+   */
+  bool prov_session_holds_radio(prov_phase_t phase);
+
 #ifdef __cplusplus
 }
 #endif
