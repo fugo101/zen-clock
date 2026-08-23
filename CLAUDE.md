@@ -305,7 +305,10 @@ alone survives sleep.
    `BLE_PROV_FAILED` re-shows it automatically.
 
 3. **Wrong-password retry:** On `BLE_PROV_FAILED`, do NOT stop/restart the BLE manager. Clear the NVS credential and
-   re-show the QR overlay so the phone retries over the existing BLE connection.
+   re-show the QR overlay — and `ble_provisioning.c`'s `NETWORK_PROV_WIFI_CRED_FAIL` handler must call
+   `network_prov_mgr_reset_wifi_sm_state_on_failure()`, gated on the action being `PROV_ACT_EMIT_FAILED`. Without
+   that call no retry is possible by any route and only a reboot recovers (#97); without the gate it runs against a
+   released BT controller. Why, in full: `docs/adr/0002-wifi-and-ble-provisioning-boundaries.md`.
 
 4. **Post-provisioning WiFi:** After `BLE_PROV_SUCCESS`, `network_prov_mgr` leaves WiFi connected.
    `wifi_manager.c::try_connect_candidate()` must call `esp_wifi_disconnect()` + `vTaskDelay(300ms)` before
