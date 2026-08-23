@@ -256,6 +256,27 @@ static void prov_event_handler(void *arg, // NOLINT(readability-non-const-parame
       break;
     }
     ESP_LOGW(tag, "Credential verification failed (reason=%d)", reason ? (int) *reason : -1);
+    if (action == PROV_ACT_EMIT_FAILED)
+    {
+      // The manager wedges itself on a failed credential and nothing else un-wedges it: it parks
+      // at prov_state = FAIL without ever stopping, and network_prov_mgr_configure_wifi_sta()
+      // then refuses every credential that follows — over the existing BLE link and a fresh
+      // pairing alike. Only a reboot recovered it (#97). See ADR-0002 for the full mechanism.
+      //
+      // Gated on EMIT_FAILED, not on "anything but SUPPRESS": CRED_FAILED also resolves to
+      // PROV_ACT_NONE in IDLE, STARTING and UNAVAILABLE, and UNAVAILABLE means
+      // ble_provisioning_release_memory() has already handed the BT controller back — the same
+      // arrival order ble_provisioning_stop() guards against explicitly a few lines below.
+      //
+      // A failed reset is not escalated. The call can only reject while prov_state is neither
+      // FAIL nor STARTED, and this is the handler for the event that just set FAIL; the honest
+      // last resort is the IO14 3-second hold, which reboots into provisioning.
+      const esp_err_t reset_ret = network_prov_mgr_reset_wifi_sm_state_on_failure();
+      if (reset_ret != ESP_OK)
+      {
+        ESP_LOGW(tag, "Provisioning state-machine reset failed: %s — retry needs a reboot", esp_err_to_name(reset_ret));
+      }
+    }
     session_emit(action, NULL, NULL);
     break;
   }

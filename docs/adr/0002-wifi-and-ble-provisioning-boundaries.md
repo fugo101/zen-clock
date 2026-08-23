@@ -78,10 +78,38 @@ are irreversible in the wrong direction: no input sequence may report a successf
 an outcome having been latched, and no input sequence may leave the terminal
 memory-released phase.
 
-**On a wrong-password retry, the BLE manager is never stopped and restarted.** Instead, the stored
-NVS credential is cleared and the QR overlay is re-shown so the phone retries over the existing BLE
-connection — restarting the manager would drop the phone's connection and force a fresh BLE pairing
-for what should be a one-field correction.
+**On a wrong-password retry, the BLE manager is never stopped and restarted — but its state machine
+must be explicitly reset.** The stored NVS credential is cleared and the QR overlay is re-shown, and
+`network_prov_mgr_reset_wifi_sm_state_on_failure()` is called from the `NETWORK_PROV_WIFI_CRED_FAIL`
+handler. That call is not optional plumbing: without it a retry is impossible by any route, and this
+paragraph used to describe one anyway (#97).
+
+`network_provisioning` wedges itself on a failed credential. It sets `prov_state = FAIL` and does
+not stop — no auto-stop timer is armed on that branch, so no `NETWORK_PROV_END` arrives and the BLE
+service keeps advertising, looking healthy. But `FAIL` sorts above `CRED_RECV` in its state enum and
+`network_prov_mgr_configure_wifi_sta()` refuses anything at or past `CRED_RECV`, so every subsequent
+credential is rejected — over the existing link *and* over a fresh pairing. Recovery was `esp_restart()`
+only, reachable from the IO14 emergency hold; both UI exits read the session phase, saw `ADVERTISING`,
+and correctly concluded there was nothing to fix. Espressif's own BLE-prov example calls the same
+reset on the same event.
+
+Not stopping the manager remains right, though not for the reason first recorded here. The original
+argument was that a restart "would drop the phone's connection and force a fresh BLE pairing"; on
+device the phone leaves its provisioning screen and drops the link by itself, so that cost is paid
+regardless. What a restart actually costs is a ~1.2 s teardown, a regenerated SRP salt/verifier, and
+therefore a new QR — the code on screen and any code the user already scanned both go stale — plus a
+pending-restart intent threaded through the `BLE_PROV_STOPPED` path. The reset is one call, keeps the
+displayed QR valid, and leaves the session phase untouched, so `prov_session.c` needs no new phase for
+a state that is now unobservable.
+
+The reset is gated on the session action being `PROV_ACT_EMIT_FAILED` — positively, not as "anything
+but `PROV_ACT_SUPPRESS`". Suppress is the case that first suggests itself, because a `CRED_FAIL` raised
+by our own teardown must not un-wedge a session we are deliberately stopping. But `PROV_IN_CRED_FAILED`
+also resolves to `PROV_ACT_NONE` in `IDLE`, `STARTING` and `UNAVAILABLE`, and `UNAVAILABLE` means
+`ble_provisioning_release_memory()` has already handed the BT controller back — resetting a manager
+that no longer has a stack underneath it is the same hazard `ble_provisioning_stop()` already refuses
+`UNAVAILABLE` for. The pure machine is total, so the safe gate is the one that names the single phase
+the reset is meant for.
 
 **After `BLE_PROV_SUCCESS`, the code explicitly disconnects and waits 300ms before reconnecting.**
 `network_prov_mgr` leaves WiFi already connected when provisioning succeeds, but reconnecting
