@@ -692,6 +692,47 @@ static void test_prov_session_is_total(void)
   }
 }
 
+// ---- holds_radio ----------------------------------------------------------
+//
+// The predicate the WiFi reconnect timer checks before starting the radio (#98). It is a property
+// of the session model, not of app_handlers: deriving it at the call site is how UNAVAILABLE got
+// read as "BLE still owns the radio", which is the exact inversion of what it means.
+
+static void test_prov_session_holds_radio_only_while_a_session_is_live(void)
+{
+  TEST_ASSERT_TRUE(prov_session_holds_radio(PROV_PHASE_STARTING));
+  TEST_ASSERT_TRUE(prov_session_holds_radio(PROV_PHASE_ADVERTISING));
+  TEST_ASSERT_TRUE(prov_session_holds_radio(PROV_PHASE_STOPPING));
+  TEST_ASSERT_FALSE(prov_session_holds_radio(PROV_PHASE_IDLE));
+}
+
+// The case that carries the weight: UNAVAILABLE means the BLE controller memory has been released,
+// so the radio belongs to WiFi and always will. Reporting true here strands the device offline
+// after the first post-provisioning disconnect, with only a reboot to recover it.
+static void test_prov_session_holds_radio_is_false_once_memory_is_released(void)
+{
+  TEST_ASSERT_FALSE(prov_session_holds_radio(PROV_PHASE_UNAVAILABLE));
+
+  const prov_step_t r = prov_session_step(sess(PROV_PHASE_ADVERTISING, true), PROV_IN_MEM_RELEASED);
+  TEST_ASSERT_EQUAL_INT(PROV_PHASE_UNAVAILABLE, r.next.phase);
+  TEST_ASSERT_FALSE(prov_session_holds_radio(r.next.phase));
+}
+
+// Every phase a live session can be observed in must claim the radio, and every phase it cannot
+// must not. Pinned against the machine itself so a new phase cannot be added without a verdict.
+static void test_prov_session_holds_radio_agrees_with_the_live_phases(void)
+{
+  const prov_phase_t live[] = {PROV_PHASE_STARTING, PROV_PHASE_ADVERTISING, PROV_PHASE_STOPPING};
+  for (size_t i = 0; i < sizeof(live) / sizeof(live[0]); i++)
+  {
+    // A live phase is exactly one a START_BEGUN can reset rather than one END has resolved.
+    const prov_step_t r = prov_session_step(sess(live[i], false), PROV_IN_END);
+    TEST_ASSERT_EQUAL_INT(PROV_PHASE_IDLE, r.next.phase);
+    TEST_ASSERT_TRUE(prov_session_holds_radio(live[i]));
+    TEST_ASSERT_FALSE(prov_session_holds_radio(r.next.phase));
+  }
+}
+
 int main(void)
 {
   UNITY_BEGIN();
@@ -758,5 +799,8 @@ int main(void)
   RUN_TEST(test_prov_session_unavailable_is_terminal);
   RUN_TEST(test_prov_session_memory_release_is_reachable_from_any_phase);
   RUN_TEST(test_prov_session_is_total);
+  RUN_TEST(test_prov_session_holds_radio_only_while_a_session_is_live);
+  RUN_TEST(test_prov_session_holds_radio_is_false_once_memory_is_released);
+  RUN_TEST(test_prov_session_holds_radio_agrees_with_the_live_phases);
   return UNITY_END();
 }

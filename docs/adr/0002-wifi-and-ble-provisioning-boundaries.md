@@ -13,8 +13,11 @@ must always stay armed instead.
 **`wifi_manager_stop()` fires no events, so whoever stops WiFi owns restarting it.** That is what
 lets a deliberate stop hand the radio to `network_prov_mgr` without the app scheduling a reconnect
 against itself — and it is why `dismiss_provisioning()` and the `BLE_PROV_STOPPED` handler restart
-WiFi by hand. The full contract (five numbered invariants) is stated once, on the declaration in
-`components/wifi_manager/include/wifi_manager.h`; that header is the source of truth, not this file.
+WiFi by hand. Owning the restart also means owning the *pending* one: a backoff retry armed by an
+earlier failure has to be disarmed before the stop, or it fires mid-session and takes the radio back
+from `network_prov_mgr` (#98). The full contract (five numbered invariants) is stated once, on the
+declaration in `components/wifi_manager/include/wifi_manager.h`; that header is the source of truth,
+not this file.
 
 **~~There is deliberately no periodic DNS re-probe once `WIFI_ST_CONNECTED`.~~ Superseded by
 ADR-0008.** The constraint was real — `do_dns_probe()` contained an unbounded `getaddrinfo()`, and
