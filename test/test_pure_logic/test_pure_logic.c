@@ -12,6 +12,7 @@
 #include "input_policy.h"
 #include "battery_view.h"
 #include "settings_table.h"
+#include "prov_session.h"
 
 void setUp(void)
 {
@@ -417,6 +418,280 @@ static void test_settings_sleep_seconds_sums_components(void)
   TEST_ASSERT_EQUAL_UINT32(86399, settings_sleep_seconds(23, 59, 59));
 }
 
+// ============================================================
+// prov_session — the provisioning lifecycle
+//
+// The machine that decides BLE_PROV_SUCCESS vs BLE_PROV_STOPPED, which is what permits the one-way
+// release of ~110 KB of BT RAM. Two of these tests are properties over every input sequence rather
+// than single transitions, because both directions are irreversible: reporting success without a
+// verified credential bricks re-provisioning, and leaving the terminal phase would let a device
+// try to start a session with no controller behind it.
+// ============================================================
+
+static const prov_input_t k_all_inputs[] = {
+    PROV_IN_START_BEGUN, PROV_IN_START_OK,      PROV_IN_START_FAILED,
+    PROV_IN_STOP_REQUESTED, PROV_IN_CRED_RECEIVED, PROV_IN_CRED_VERIFIED,
+    PROV_IN_CRED_FAILED, PROV_IN_END,          PROV_IN_MEM_RELEASED,
+};
+static const prov_phase_t k_all_phases[] = {
+    PROV_PHASE_IDLE, PROV_PHASE_STARTING, PROV_PHASE_ADVERTISING, PROV_PHASE_STOPPING,
+    PROV_PHASE_UNAVAILABLE,
+};
+#define N_INPUTS (sizeof(k_all_inputs) / sizeof(k_all_inputs[0]))
+#define N_PHASES (sizeof(k_all_phases) / sizeof(k_all_phases[0]))
+
+static prov_session_t sess(prov_phase_t phase, bool verified)
+{
+  const prov_session_t s = {.phase = phase, .verified = verified};
+  return s;
+}
+
+static void test_prov_session_start_reaches_advertising(void)
+{
+  prov_step_t r = prov_session_step(sess(PROV_PHASE_IDLE, false), PROV_IN_START_BEGUN);
+  TEST_ASSERT_EQUAL_INT(PROV_PHASE_STARTING, r.next.phase);
+  TEST_ASSERT_EQUAL_INT(PROV_ACT_NONE, r.action);
+
+  r = prov_session_step(r.next, PROV_IN_START_OK);
+  TEST_ASSERT_EQUAL_INT(PROV_PHASE_ADVERTISING, r.next.phase);
+  TEST_ASSERT_EQUAL_INT(PROV_ACT_EMIT_STARTED, r.action);
+}
+
+static void test_prov_session_start_failure_returns_to_idle(void)
+{
+  const prov_step_t r = prov_session_step(sess(PROV_PHASE_STARTING, false), PROV_IN_START_FAILED);
+  TEST_ASSERT_EQUAL_INT(PROV_PHASE_IDLE, r.next.phase);
+  TEST_ASSERT_EQUAL_INT(PROV_ACT_NONE, r.action);
+}
+
+// The reason START_OK is a guard and not a plain assignment: ble_provisioning.c writes it from both
+// the NETWORK_PROV_START handler and the tail of start(), which run on different tasks. A second
+// write arriving after the session already ended must not resurrect it.
+static void test_prov_session_start_ok_never_resurrects_a_finished_session(void)
+{
+  prov_step_t r = prov_session_step(sess(PROV_PHASE_IDLE, false), PROV_IN_START_OK);
+  TEST_ASSERT_EQUAL_INT(PROV_PHASE_IDLE, r.next.phase);
+  TEST_ASSERT_EQUAL_INT(PROV_ACT_NONE, r.action);
+
+  // Idempotent while advertising — no second BLE_PROV_STARTED.
+  r = prov_session_step(sess(PROV_PHASE_ADVERTISING, false), PROV_IN_START_OK);
+  TEST_ASSERT_EQUAL_INT(PROV_PHASE_ADVERTISING, r.next.phase);
+  TEST_ASSERT_EQUAL_INT(PROV_ACT_NONE, r.action);
+}
+
+static void test_prov_session_start_clears_a_previous_outcome(void)
+{
+  // A previous session's success must not make this one's END look like a success too.
+  const prov_step_t r = prov_session_step(sess(PROV_PHASE_IDLE, true), PROV_IN_START_BEGUN);
+  TEST_ASSERT_FALSE(r.next.verified);
+}
+
+// Regression: a start landing while a previous session was still winding down used to advance
+// nothing, leaving the phase at STOPPING with a live service behind it and no BLE_PROV_STARTED ever
+// emitted — the user saw no QR. START_BEGUN is an explicit app action after a successful
+// network_prov_mgr_init(), so it resets the session from any live phase.
+static void test_prov_session_start_resets_any_live_phase(void)
+{
+  const prov_phase_t live[] = {PROV_PHASE_IDLE, PROV_PHASE_STARTING, PROV_PHASE_ADVERTISING,
+                               PROV_PHASE_STOPPING};
+  for (size_t i = 0; i < sizeof(live) / sizeof(live[0]); i++)
+  {
+    const prov_step_t r = prov_session_step(sess(live[i], true), PROV_IN_START_BEGUN);
+    TEST_ASSERT_EQUAL_INT(PROV_PHASE_STARTING, r.next.phase);
+    TEST_ASSERT_FALSE(r.next.verified); // a previous outcome must not carry into a new session
+  }
+}
+
+// Regression, and the worst bug this refactor briefly had: gating the credential on ADVERTISING
+// meant a phone finishing provisioning while the user backed out had its credential dropped, while
+// the verification behind it still latched an outcome — so END reported success, released 110 KB of
+// BT RAM for good, and reconnected on the old credential. A received credential is never dropped.
+static void test_prov_session_credential_is_never_dropped(void)
+{
+  const prov_phase_t live[] = {PROV_PHASE_STARTING, PROV_PHASE_ADVERTISING, PROV_PHASE_STOPPING};
+  for (size_t i = 0; i < sizeof(live) / sizeof(live[0]); i++)
+  {
+    const prov_step_t r = prov_session_step(sess(live[i], false), PROV_IN_CRED_RECEIVED);
+    TEST_ASSERT_EQUAL_INT(PROV_ACT_EMIT_CRED_RECEIVED, r.action);
+    TEST_ASSERT_EQUAL_INT(live[i], r.next.phase); // reporting it moves nothing
+  }
+}
+
+// The pairing that made the dropped credential unrecoverable: anything that can latch an outcome
+// must also be able to report the credential that earned it.
+static void test_prov_session_success_is_always_preceded_by_a_reportable_credential(void)
+{
+  const prov_phase_t live[] = {PROV_PHASE_STARTING, PROV_PHASE_ADVERTISING, PROV_PHASE_STOPPING};
+  for (size_t i = 0; i < sizeof(live) / sizeof(live[0]); i++)
+  {
+    const prov_session_t base = sess(live[i], false);
+    if (prov_session_step(base, PROV_IN_CRED_VERIFIED).next.verified)
+    {
+      TEST_ASSERT_EQUAL_INT_MESSAGE(PROV_ACT_EMIT_CRED_RECEIVED,
+                                    prov_session_step(base, PROV_IN_CRED_RECEIVED).action,
+                                    "a phase that latches an outcome must forward the credential");
+    }
+  }
+}
+
+static void test_prov_session_end_without_a_credential_is_cancelled(void)
+{
+  const prov_step_t r = prov_session_step(sess(PROV_PHASE_ADVERTISING, false), PROV_IN_END);
+  TEST_ASSERT_EQUAL_INT(PROV_PHASE_IDLE, r.next.phase);
+  TEST_ASSERT_EQUAL_INT(PROV_ACT_EMIT_STOPPED, r.action);
+}
+
+static void test_prov_session_end_with_a_credential_is_success(void)
+{
+  prov_step_t r = prov_session_step(sess(PROV_PHASE_ADVERTISING, false), PROV_IN_CRED_VERIFIED);
+  TEST_ASSERT_TRUE(r.next.verified);
+  TEST_ASSERT_EQUAL_INT(PROV_ACT_NONE, r.action); // latches quietly; END reports it
+
+  r = prov_session_step(r.next, PROV_IN_END);
+  TEST_ASSERT_EQUAL_INT(PROV_PHASE_IDLE, r.next.phase);
+  TEST_ASSERT_EQUAL_INT(PROV_ACT_EMIT_SUCCESS, r.action);
+  TEST_ASSERT_FALSE(r.next.verified); // consumed, not left latched for the next session
+}
+
+// A cancel racing a successful verification: the credential still wins. Preserves the behaviour of
+// the old s_cred_ok latch, which s_stopping never cleared.
+static void test_prov_session_verified_outcome_survives_a_racing_stop(void)
+{
+  prov_step_t r = prov_session_step(sess(PROV_PHASE_ADVERTISING, true), PROV_IN_STOP_REQUESTED);
+  TEST_ASSERT_EQUAL_INT(PROV_PHASE_STOPPING, r.next.phase);
+  TEST_ASSERT_TRUE(r.next.verified);
+
+  r = prov_session_step(r.next, PROV_IN_END);
+  TEST_ASSERT_EQUAL_INT(PROV_ACT_EMIT_SUCCESS, r.action);
+}
+
+static void test_prov_session_verification_still_latches_while_stopping(void)
+{
+  const prov_step_t r = prov_session_step(sess(PROV_PHASE_STOPPING, false), PROV_IN_CRED_VERIFIED);
+  TEST_ASSERT_TRUE(r.next.verified);
+}
+
+// The bug this suppression exists for: the manager can raise CRED_FAIL as it tears a session down,
+// and the app answers a failure by erasing the stored WiFi credential and re-showing the QR.
+static void test_prov_session_credential_failure_is_suppressed_while_stopping(void)
+{
+  prov_step_t r = prov_session_step(sess(PROV_PHASE_ADVERTISING, false), PROV_IN_CRED_FAILED);
+  TEST_ASSERT_EQUAL_INT(PROV_ACT_EMIT_FAILED, r.action); // a real failure, reported
+
+  r = prov_session_step(sess(PROV_PHASE_STOPPING, false), PROV_IN_CRED_FAILED);
+  TEST_ASSERT_EQUAL_INT(PROV_ACT_SUPPRESS, r.action);
+  TEST_ASSERT_EQUAL_INT(PROV_PHASE_STOPPING, r.next.phase);
+}
+
+// A wrong-password retry keeps advertising so the phone can retry over the same BLE link.
+static void test_prov_session_failure_keeps_advertising(void)
+{
+  const prov_step_t r = prov_session_step(sess(PROV_PHASE_ADVERTISING, false), PROV_IN_CRED_FAILED);
+  TEST_ASSERT_EQUAL_INT(PROV_PHASE_ADVERTISING, r.next.phase);
+}
+
+static void test_prov_session_credentials_are_forwarded_while_advertising(void)
+{
+  const prov_step_t r = prov_session_step(sess(PROV_PHASE_ADVERTISING, false), PROV_IN_CRED_RECEIVED);
+  TEST_ASSERT_EQUAL_INT(PROV_ACT_EMIT_CRED_RECEIVED, r.action);
+  TEST_ASSERT_EQUAL_INT(PROV_PHASE_ADVERTISING, r.next.phase);
+}
+
+// The manager can end a session that never advertised: a start that unwound, or the deinit that
+// ble_provisioning_stop() issues for exactly that case. Without this the phase stuck at STARTING
+// and no later input could clear it — the device would refuse to provision until reboot.
+static void test_prov_session_end_while_starting_resolves_the_session(void)
+{
+  const prov_step_t r = prov_session_step(sess(PROV_PHASE_STARTING, false), PROV_IN_END);
+  TEST_ASSERT_EQUAL_INT(PROV_PHASE_IDLE, r.next.phase);
+  TEST_ASSERT_EQUAL_INT(PROV_ACT_EMIT_STOPPED, r.action);
+}
+
+// Every phase that can be entered must have a route back to IDLE, or a session can wedge.
+static void test_prov_session_every_live_phase_resolves_on_end(void)
+{
+  const prov_phase_t live[] = {PROV_PHASE_STARTING, PROV_PHASE_ADVERTISING, PROV_PHASE_STOPPING};
+  for (size_t i = 0; i < sizeof(live) / sizeof(live[0]); i++)
+  {
+    const prov_step_t r = prov_session_step(sess(live[i], false), PROV_IN_END);
+    TEST_ASSERT_EQUAL_INT(PROV_PHASE_IDLE, r.next.phase);
+    TEST_ASSERT_EQUAL_INT(PROV_ACT_EMIT_STOPPED, r.action);
+  }
+}
+
+static void test_prov_session_stop_from_starting_is_a_stop(void)
+{
+  // Narrow but real: a cancel landing between mgr_init() and the service coming up.
+  prov_step_t r = prov_session_step(sess(PROV_PHASE_STARTING, false), PROV_IN_STOP_REQUESTED);
+  TEST_ASSERT_EQUAL_INT(PROV_PHASE_STOPPING, r.next.phase);
+
+  r = prov_session_step(r.next, PROV_IN_END);
+  TEST_ASSERT_EQUAL_INT(PROV_ACT_EMIT_STOPPED, r.action);
+}
+
+// Property, not a case: nothing may report a completed session without an outcome latched first.
+// Walks every reachable state against every input to depth 4.
+static void walk_no_unearned_success(prov_session_t s, int depth)
+{
+  if (depth == 0)
+  {
+    return;
+  }
+  for (size_t i = 0; i < N_INPUTS; i++)
+  {
+    const prov_step_t r = prov_session_step(s, k_all_inputs[i]);
+    if (r.action == PROV_ACT_EMIT_SUCCESS)
+    {
+      TEST_ASSERT_TRUE_MESSAGE(s.verified, "EMIT_SUCCESS from a session with no verified credential");
+    }
+    walk_no_unearned_success(r.next, depth - 1);
+  }
+}
+
+static void test_prov_session_never_reports_success_without_a_verified_credential(void)
+{
+  walk_no_unearned_success(sess(PROV_PHASE_IDLE, false), 4);
+}
+
+// Mirror property: the terminal phase is terminal. Nothing may leave it, and nothing may emit from
+// it — a device whose BLE controller memory is gone must not look startable.
+static void test_prov_session_unavailable_is_terminal(void)
+{
+  for (size_t i = 0; i < N_INPUTS; i++)
+  {
+    const prov_step_t r = prov_session_step(sess(PROV_PHASE_UNAVAILABLE, false), k_all_inputs[i]);
+    TEST_ASSERT_EQUAL_INT(PROV_PHASE_UNAVAILABLE, r.next.phase);
+    TEST_ASSERT_EQUAL_INT(PROV_ACT_NONE, r.action);
+  }
+}
+
+static void test_prov_session_memory_release_is_reachable_from_any_phase(void)
+{
+  for (size_t i = 0; i < N_PHASES; i++)
+  {
+    const prov_step_t r = prov_session_step(sess(k_all_phases[i], false), PROV_IN_MEM_RELEASED);
+    TEST_ASSERT_EQUAL_INT(PROV_PHASE_UNAVAILABLE, r.next.phase);
+  }
+}
+
+// Totality: every phase accepts every input without wandering off the enum, so adding a phase or
+// an input cannot silently leave a hole in the table.
+static void test_prov_session_is_total(void)
+{
+  for (size_t p = 0; p < N_PHASES; p++)
+  {
+    for (size_t v = 0; v < 2; v++)
+    {
+      for (size_t i = 0; i < N_INPUTS; i++)
+      {
+        const prov_step_t r = prov_session_step(sess(k_all_phases[p], v != 0), k_all_inputs[i]);
+        TEST_ASSERT_TRUE(r.next.phase >= PROV_PHASE_IDLE && r.next.phase <= PROV_PHASE_UNAVAILABLE);
+        TEST_ASSERT_TRUE(r.action >= PROV_ACT_NONE && r.action <= PROV_ACT_SUPPRESS);
+      }
+    }
+  }
+}
+
 int main(void)
 {
   UNITY_BEGIN();
@@ -462,5 +737,26 @@ int main(void)
   RUN_TEST(test_settings_option_index_respects_polarity);
   RUN_TEST(test_settings_option_index_is_involutive);
   RUN_TEST(test_settings_sleep_seconds_sums_components);
+  RUN_TEST(test_prov_session_start_reaches_advertising);
+  RUN_TEST(test_prov_session_start_failure_returns_to_idle);
+  RUN_TEST(test_prov_session_start_ok_never_resurrects_a_finished_session);
+  RUN_TEST(test_prov_session_start_clears_a_previous_outcome);
+  RUN_TEST(test_prov_session_start_resets_any_live_phase);
+  RUN_TEST(test_prov_session_credential_is_never_dropped);
+  RUN_TEST(test_prov_session_success_is_always_preceded_by_a_reportable_credential);
+  RUN_TEST(test_prov_session_end_without_a_credential_is_cancelled);
+  RUN_TEST(test_prov_session_end_with_a_credential_is_success);
+  RUN_TEST(test_prov_session_verified_outcome_survives_a_racing_stop);
+  RUN_TEST(test_prov_session_verification_still_latches_while_stopping);
+  RUN_TEST(test_prov_session_credential_failure_is_suppressed_while_stopping);
+  RUN_TEST(test_prov_session_failure_keeps_advertising);
+  RUN_TEST(test_prov_session_credentials_are_forwarded_while_advertising);
+  RUN_TEST(test_prov_session_stop_from_starting_is_a_stop);
+  RUN_TEST(test_prov_session_end_while_starting_resolves_the_session);
+  RUN_TEST(test_prov_session_every_live_phase_resolves_on_end);
+  RUN_TEST(test_prov_session_never_reports_success_without_a_verified_credential);
+  RUN_TEST(test_prov_session_unavailable_is_terminal);
+  RUN_TEST(test_prov_session_memory_release_is_reachable_from_any_phase);
+  RUN_TEST(test_prov_session_is_total);
   return UNITY_END();
 }

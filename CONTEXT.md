@@ -42,7 +42,15 @@ _Avoid_: Network manager, connection handler
 
 **Provisioning**:
 The BLE-based flow (via `network_provisioning` / Espressif's BLE Prov app) that lets a phone hand the device a WiFi credential over Security 2 (SRP6a), shown to the user as a QR overlay.
-_Avoid_: Setup, pairing, onboarding
+_Avoid_: Setup, pairing, onboarding. Never use the bare word for whether the QR overlay is on screen — the overlay can be dismissed while the session runs on, and conflating the two is what made the device's power policy read a widget pointer.
+
+**Provisioning session**:
+One run of the provisioning lifecycle, from the moment the BLE service is asked to start until the service confirms it has stopped. It is not the QR overlay: the user can dismiss the overlay and the session keeps advertising, which is what lets a never-provisioned device stay usable as a clock. The session has exactly one phase at a time, and one of those phases is terminal — once the BLE controller's memory has been released the device cannot host another session until it reboots.
+_Avoid_: Provisioning mode, provisioning state, BLE session
+
+**Session outcome**:
+Whether a provisioning session ended because a credential was verified or because it was cancelled. Latched the moment verification succeeds and independent of how the session then stops, so a cancel racing a successful verification still reports the success. Only the verified outcome permits the one-way release of the BLE controller's memory, which makes this the single most consequential bit in the firmware.
+_Avoid_: Success flag, provisioning result
 
 **No-credential state**:
 The specific WiFi manager outcome (`WIFI_MGR_NO_CRED`) that is the only trigger for starting provisioning — every other failure mode instead schedules a backoff reconnect, because losing coverage must never look like an unprovisioned device.

@@ -137,7 +137,7 @@ mid-action now always lands instead of being silently dropped.
 | `components/bsp/`              | Board Support: display init, battery (GPIO4/ADC1_CH3), backlight (LEDC), buttons                                                                                                                                           |
 | `components/ui/`               | LVGL UI — modular widgets, see below                                                                                                                                                                                       |
 | `components/wifi_manager/`     | WiFi state machine: IDLE → SCANNING → CONNECTING → VERIFYING → CONNECTED                                                                                                                                                   |
-| `components/ble_provisioning/` | BLE WiFi provisioning via `espressif/network_provisioning`                                                                                                                                                                 |
+| `components/ble_provisioning/` | BLE WiFi provisioning via `espressif/network_provisioning`. `prov_session.c` is the session lifecycle (phase + latched outcome) as a pure transition function — no ESP-IDF headers, so it builds for the host-side `[env:native]` tests; symlinked into `test/test_pure_logic/`. It owns the `BLE_PROV_SUCCESS`-vs-`STOPPED` distinction that gates the one-way 110 KB memory release |
 | `components/settings/`         | NVS-backed settings behind a 7-symbol API (`settings_get/get_bool/set` + `settings_key_t`). `settings_table.c` is the descriptor table — NVS key, default, range and boolean polarity for all 8 settings — and is pure, so it builds for the host-side `[env:native]` tests; symlinked into `test/test_pure_logic/`. See ADR-0006 |
 | `components/sntp_sync/`        | NTP time synchronization; skips initial sync on deep-sleep wake if recently synced                                                                                                                                         |
 | `components/deep_sleep/`       | Auto-sleep timer (inactivity) + manual trigger + ext1 wakeup on GPIO0/GPIO14. Cancellable during the fade; declines while an inhibit callback says so. Cuts the LCD rail and latches it — see the hold/release warning below |
@@ -431,9 +431,17 @@ events are suppressed while `stop_requested()`, otherwise a deliberate stop can 
 fires later during BLE provisioning and takes the radio back. A 32-char SSID with no NUL terminator
 is correct — `wifi_cfg.sta.ssid` is `uint8_t[32]`, the 802.11 maximum, and the driver reads it bounded.
 
-**BLE provisioning:** `ble_provisioning_is_active()` returns `s_active && !s_stopping` — false the
-moment a stop is requested — so re-entering during the ~1.2s teardown window takes the "just re-show
-the QR" branch against a manager that is already tearing itself down, instead of racing a restart.
+**BLE provisioning:** the session lifecycle is one enumerated phase plus a latched outcome, in the
+pure `prov_session.c` (host-tested; symlinked into `test/test_pure_logic/`). It replaced four
+booleans, and `ble_provisioning_session_phase()` replaced an `is_active()` that returned
+`s_active && !s_stopping` while claiming to report advertising. Only `PROV_PHASE_ADVERTISING` takes
+`do_provisioning()`'s "just re-show the QR" branch, so re-entering during the ~1.2 s teardown window
+no longer races a manager that is tearing itself down. `s_initialized` stays outside the phase on
+purpose — it tracks whether `network_prov_mgr_deinit()` is owed, which cycles *within* a session.
+`ADVERTISING` is written from two tasks (the `NETWORK_PROV_START` handler and the tail of
+`ble_provisioning_start()`); the step function makes that edge monotonic so the later writer cannot
+revive a session that already ended, and whichever observes it first is the one that emits
+`BLE_PROV_STARTED`.
 
 **Deep sleep:** "Sleeps then wakes instantly" looks exactly like a panic from the serial log. Don't
 trust the word "panic" here — check for actual `Guru Meditation`/`Backtrace` text and for wake

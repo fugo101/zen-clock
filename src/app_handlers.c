@@ -532,7 +532,11 @@ static void do_reset_wifi(void)
 // touching the stored credential, so backing out still leaves the device able to rejoin its AP.
 static void do_provisioning(void)
 {
-  if (!ble_provisioning_is_active())
+  // Only an already-advertising manager can just re-show the QR. Every other phase takes the start
+  // path — including STARTING and STOPPING, where a start deliberately resets the session rather
+  // than waiting: a transition in flight would otherwise leave the user looking at no QR at all.
+  // UNAVAILABLE also lands here, and start() answers it by rebooting into provisioning.
+  if (ble_provisioning_session_phase() != PROV_PHASE_ADVERTISING)
   {
     ESP_LOGI(tag, "Starting provisioning (credential kept)");
     wifi_manager_stop();
@@ -592,7 +596,7 @@ static void do_ntp_resync(void)
 // middle of — and they are holding a phone up to the QR code, not pressing buttons, so nothing
 // resets the inactivity countdown.
 //
-// Keyed on the overlay being visible rather than on ble_provisioning_is_active(): a device that
+// Keyed on the overlay being visible rather than on the session phase: a device that
 // has never been provisioned keeps advertising indefinitely by design, so the latter would block
 // auto-sleep forever and flatten the battery. Once the QR is dismissed the device is a clock
 // again and may sleep; waking re-runs boot, hits NO_CRED and brings provisioning straight back.

@@ -65,7 +65,7 @@ true declines the request and re-arms the countdown. `app_handlers.c` uses it to
 provisioning QR is on screen — the user is looking at a phone, not pressing buttons, so nothing else
 would hold sleep off, and sleeping restarts the chip and drops the session.
 
-It is deliberately keyed on the overlay being visible rather than on `ble_provisioning_is_active()`:
+It is deliberately keyed on the overlay being visible rather than on `ble_provisioning_session_phase()`:
 a device that has never been provisioned advertises indefinitely by design, so the latter would
 block auto-sleep forever.
 
