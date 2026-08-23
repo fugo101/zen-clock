@@ -1,0 +1,12 @@
+## IDF Component Manager Manifest File
+## ZenClock BSP — requires espressif/button for GPIO button debounce + press timing
+dependencies:
+  espressif/button:
+    ## The registry labels 4.2.0's license "Custom"; the package's own license.txt is verbatim
+    ## Apache-2.0. See THIRD_PARTY.md — the label is wrong, not the terms.
+    version: "^4.2.0"
+    ## espressif/cmake_utilities comes in transitively via this component's own manifest — never
+    ## declare it here directly (same pattern as wireguard_lwip in src/idf_component.yml).
+  ## Required IDF version
+  idf:
+    version: ">=6.0.0"

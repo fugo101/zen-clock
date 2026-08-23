@@ -64,6 +64,18 @@ sleep_task_fn(void *arg) // NOLINT(readability-non-const-parameter, readability-
   {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
+    // A request still pending while a cancel is outstanding predates that cancel, and is void:
+    // deep_sleep_trigger() clears s_cancel, so anything genuinely newer would have cleared it.
+    // This is load-bearing since the buttons moved to espressif/button. Both buttons now fire
+    // LONG within one 10ms tick of the combo instead of the second one's events being swallowed
+    // by the old driver's poll-while-held loop, so the combo reaches deep_sleep_trigger() twice.
+    // Without this, a fade called off by a stray press was followed immediately by the second,
+    // stale request: the screen dipped toward black and came back ~250ms later, visibly.
+    if (s_cancel)
+    {
+      continue;
+    }
+
     if (sleep_inhibited())
     {
       // Re-arm, or the device asks once and never again: the inactivity timer is one-shot and is

@@ -396,11 +396,12 @@ static void on_battery_reading(const battery_view_t view)
 
 // do_reset_wifi() alone can hold the CPU for seconds: wifi_manager_stop() polls up to
 // STOP_TIMEOUT_MS, plus NVS erase, plus bringing up BLE (esp_srp_gen_salt_verifier() on a
-// 3072-bit MPI). Running that inline on the button task stalled bsp_buttons.c's held_ms counter
-// — which is just BTN_POLL_MS accumulated in a loop, so a stalled task stops counting — skewing
-// every long-press/emergency threshold measured afterwards, dropped presses queued during the
-// stall (the drain loop discards them), and made the two-button sleep combo unreachable while a
-// reset was in flight. Everything that can block now goes through this queue instead.
+// 3072-bit MPI). Running that inline on the button task blocks the only task that dispatches
+// button events, so every press during the reset waits behind it — including the two-button
+// sleep combo, which was unreachable for the whole reset. Press *timing* is no longer at risk
+// (it is measured in the esp_timer task inside espressif/button, not here), but a combo the user
+// has already finished holding by the time the task drains is a combo they did not get.
+// Everything that can block goes through this queue instead.
 #define BTN_WORKER_STACK     6144
 #define BTN_WORKER_PRIORITY  2 // below BTN_TASK_PRIORITY (3, bsp_buttons.c) so button polling wins
 #define BTN_WORKER_QUEUE_LEN 4
@@ -660,8 +661,7 @@ void on_button_press(const int btn_id, const bsp_btn_event_t event)
     // Posted after the lock is released, not called inline. nav_handle_action() touches no LVGL
     // after resolving this, so the lock is already clear either way — but running action items
     // (do_reset_wifi() above all) synchronously here still parked the button task for seconds,
-    // which stalls held_ms accounting in bsp_buttons.c and makes the two-button sleep combo
-    // unreachable mid-reset. The worker runs them instead.
+    // during which no button event is dispatched at all. The worker runs them instead.
     post_to_worker(deferred);
     break;
   }

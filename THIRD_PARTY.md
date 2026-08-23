@@ -17,10 +17,16 @@ versions and hashes are pinned in `dependencies.lock`.
 |---|---|---|---|
 | `lvgl/lvgl` | 9.5.0 | https://github.com/lvgl/lvgl | MIT |
 | `espressif/esp_lvgl_port` | 2.9.0 | https://github.com/espressif/esp-bsp | Apache-2.0 |
+| `espressif/button` | ^4.2.0 | https://github.com/espressif/esp-iot-solution | Apache-2.0 (see note) |
 | `espressif/network_provisioning` | ^1.2.4 | https://github.com/espressif/idf-extra-components | Apache-2.0 |
 | `espressif/cjson` | 1.7.19~2 | https://github.com/DaveGamble/cJSON | MIT |
 | `fugo101/microlink` | ^3.0.0 | https://github.com/fugo101/microlink (fork of [CamM2325/microlink](https://github.com/CamM2325/microlink)) | MIT |
 | `fugo101/wireguard_lwip` | ^1.0.0 (transitive, via microlink) | https://github.com/fugo101/wireguard-lwip (real fork of [smartalock/wireguard-lwip](https://github.com/smartalock/wireguard-lwip), Daniel Hope) | BSD-3-Clause |
+
+**On `espressif/button`'s license:** the Component Registry's metadata labels version 4.2.0 as
+`Custom` (4.1.7 and every earlier version are labelled `Apache-2.0`). The package's own
+`license.txt` at 4.2.0 is verbatim Apache-2.0 — the label is wrong, not the terms. This was checked
+against the published artifact before adopting; re-check it if the pinned version moves.
 
 ESP-IDF itself (6.0.1, via PlatformIO `espressif32@7.0.1`) is Apache-2.0.
 
