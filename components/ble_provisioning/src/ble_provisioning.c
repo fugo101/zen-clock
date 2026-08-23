@@ -20,6 +20,7 @@
 #include <esp_event.h>
 #include <esp_mac.h>
 #include <esp_bt.h>
+#include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -151,6 +152,34 @@ static void free_sec2_credentials(void)
 }
 
 // ============================================================
+// Teardown heap probe (#73)
+// ============================================================
+
+// A cancelled provisioning cycle is repeatable, and every one of them re-runs
+// network_prov_mgr_init()/deinit() plus a freshly heap-allocated SRP salt+verifier. That the pair
+// balances rested on code review and the upstream example only; these probes make it measurable.
+//
+// Read them ACROSS cycles, never as one cycle's difference. "begin" is taken before this cycle
+// has allocated anything, "end" at the tail of the NETWORK_PROV_END teardown; the ~19 KB between
+// them is not BLE at all but microlink losing its DERP and coordination sockets, which the WiFi
+// stop preceding this call tears down asynchronously — after "begin" has already been sampled.
+// The signal is each probe compared with ITSELF from one cycle to the next: both are taken at a
+// fixed point of an identical cycle, and "begin" in particular is the only sample where BLE holds
+// nothing, so begin(N+1) - begin(N) is a whole cycle's net accumulation. Measured over 6 cancel
+// cycles (#73): begin drifts -12 B/cycle and not monotonically, end -30 B/cycle in a sequence
+// decaying to zero, largest_free_block identical in all 12 samples. No leak, no fragmentation.
+//
+// INTERNAL|8BIT is the pool the BT controller and protocomm draw from; the total free size alone
+// would include PSRAM and answer nothing. largest_free_block is what separates a leak (free
+// falls, largest holds) from fragmentation (free holds, largest falls).
+static void log_heap(const char *const phase)
+{
+  ESP_LOGI(tag, "heapchk %s: free=%u largest=%u", phase,
+           (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+           (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+}
+
+// ============================================================
 // network_provisioning event handler
 // ============================================================
 
@@ -257,6 +286,12 @@ static void prov_event_handler(void *arg, // NOLINT(readability-non-const-parame
     // to stay alive until the manager was torn down.
     free_sec2_credentials();
 
+    // Paired with the "begin" probe at the top of ble_provisioning_start() — see the note there
+    // for how to read them. Must stay above the session_emit() below: on a cancel that callback
+    // restarts WiFi, and a sample taken after it would be measuring the network stack coming back
+    // up rather than the teardown that just finished.
+    log_heap("end");
+
     // END fires for a cancel exactly as it does for a success. Reporting both as SUCCESS sent the
     // app down a path that calls ble_provisioning_release_memory(), freeing ~110 KB of BT RAM for
     // good — a cancelled session would have left the device unprovisionable. prov_session_step()
@@ -296,6 +331,10 @@ esp_err_t ble_provisioning_start(void)
     ESP_LOGE(tag, "BLE memory already released — cannot start provisioning again");
     return ESP_ERR_INVALID_STATE;
   }
+
+  // Before network_prov_mgr_init() and before the SRP salt+verifier: the baseline this cycle is
+  // measured against. Paired with the "end" probe in the NETWORK_PROV_END handler.
+  log_heap("begin");
 
   char device_name[32];
   build_device_name(device_name, sizeof(device_name));
