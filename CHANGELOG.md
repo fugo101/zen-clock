@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.6.0](https://github.com/fugo101/zen-clock/compare/v0.5.0...v0.6.0) (2026-08-23)
+
+
+### Features
+
+* **ble:** measure heap across BLE provisioning teardown ([#106](https://github.com/fugo101/zen-clock/issues/106)) ([b9e1aa2](https://github.com/fugo101/zen-clock/commit/b9e1aa2ff71e7472d1b14bfbcb6d28bc635bedd9))
+
+
+### Bug Fixes
+
+* **ble:** reset the provisioning state machine on a failed credential ([#108](https://github.com/fugo101/zen-clock/issues/108)) ([faf9e93](https://github.com/fugo101/zen-clock/commit/faf9e931e272a34e3c0c127427b9240e9ff265fb))
+* **wifi:** cancel a pending reconnect before handing the radio to BLE ([#110](https://github.com/fugo101/zen-clock/issues/110)) ([c93bd45](https://github.com/fugo101/zen-clock/commit/c93bd45fc7cfaba185cf1e8410c29e41226d0eab))
+* **wifi:** report the link only, let NTP prove the internet ([#103](https://github.com/fugo101/zen-clock/issues/103)) ([ccf60b7](https://github.com/fugo101/zen-clock/commit/ccf60b7978f831a1723f6d5fbc37ff0b4eece6f1))
+* **wifi:** save the AP hint on the post-provisioning path ([#101](https://github.com/fugo101/zen-clock/issues/101)) ([7a1fabf](https://github.com/fugo101/zen-clock/commit/7a1fabfa3cfb9ffba7a39c39e295ca04ffb12941))
+
+
+### Refactoring
+
+* **bsp:** replace hand-written button timing with espressif/button ([#105](https://github.com/fugo101/zen-clock/issues/105)) ([d0f6070](https://github.com/fugo101/zen-clock/commit/d0f6070708cc2dde2e5d861fb58a635f2f9bc755))
+
 ## [0.5.0](https://github.com/fugo101/zen-clock/compare/v0.4.2...v0.5.0) (2026-08-23)
 
 
