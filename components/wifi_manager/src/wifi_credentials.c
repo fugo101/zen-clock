@@ -124,7 +124,7 @@ esp_err_t wifi_manager_clear_credential(void)
 void wifi_cred_save_ap_hint(const uint8_t *bssid, uint8_t channel)
 {
   // Idempotent by design. NVS is append-only — updating a key appends a new entry and marks the
-  // old one erased — and the caller sits on the VERIFYING → CONNECTED transition, which every
+  // old one erased — and the caller sits on the LINK_UP → CONNECTED transition, which every
   // backoff reconnect passes through. Skipping an identical write means no future caller has to
   // reason about how often that transition fires before adding a call.
   uint8_t cur_bssid[6];

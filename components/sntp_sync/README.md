@@ -8,8 +8,10 @@ ESP32 RTC drift, using primary (VNIX) and fallback (Pool NTP, Google) servers.
 
 **A failed sync does not wait out the hour.** The interval applies only after a success; a failure retries on a
 backoff of 30 s doubling to a 5-minute ceiling, resetting to the hourly cadence once a sync lands. Without this, a
-boot with no internet displayed `01/01/1970` for a full hour before trying again — and, since a successful sync is
-what clears the status bar's "no internet" state, the yellow WiFi icon would have persisted just as long.
+boot with no internet displayed `01/01/1970` for a full hour before trying again. The retry cadence matters twice
+over: a successful sync is the firmware's only proof that the internet works
+(`docs/adr/0008-internet-proof-belongs-to-ntp.md`), so this loop is also how a device recovers the claim after an
+outage or a captive-portal sign-in.
 
 On wake from deep sleep, the component checks `RTC_DATA_ATTR` memory for the last successful sync timestamp.
 If the elapsed time is within the 1-hour resync interval, the initial NTP sync is skipped and `SNTP_EVENT_SYNCED`

@@ -35,19 +35,14 @@ extern "C"
   // Stop — how long wifi_manager_stop() waits for the task to reach IDLE
   // ============================================================
 
-  // Covers the bounded paths: one scan round (SCAN_MAX_TIME_MS × ~13 channels ≈ 4s), the
-  // stop-aware connect wait, and the 300ms post-disconnect settle. It does NOT bound VERIFYING —
-  // see invariant 2 on wifi_manager_stop() in wifi_manager.h for why that leaks out to callers.
+  // Covers every path the task can be in: one scan round (SCAN_MAX_TIME_MS × ~13 channels ≈ 4s —
+  // esp_wifi_scan_start() blocks, so do_aggregated_scan() honours a stop between rounds, not
+  // during one), the stop-aware connect wait, and the 300ms post-disconnect settle. The margin
+  // over the worst case is thin and the scan's duration is the driver's estimate rather than a
+  // guarantee, which is why invariant 2 on wifi_manager_stop() in wifi_manager.h still makes
+  // ESP_ERR_TIMEOUT a normal outcome for callers to handle.
 #define STOP_TIMEOUT_MS 6000
 #define STOP_POLL_MS    20
-
-  // ============================================================
-  // DNS connectivity probe — verify internet after Got IP
-  // ============================================================
-
-#define DNS_PROBE_HOST        "pool.ntp.org"
-#define DNS_PROBE_MAX         5    // Max probe attempts
-#define DNS_PROBE_INTERVAL_MS 2000 // Between probes (ms)
 
   // ============================================================
   // Single-credential loader (defined in wifi_credentials.c)

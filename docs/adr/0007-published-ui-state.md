@@ -54,7 +54,7 @@ never painted.** This is a real behaviour change, not just latency. The visible 
 Network → NTP Resync, which publishes `SNTP_STATUS_SYNCING` and then `SNTP_STATUS_SYNCED`; against a
 LAN time server that round trip can finish inside 250 ms, and the orange syncing icon — the only
 feedback that the action did anything — never appears. The same collapses
-`SCANNING → CONNECTING → VERIFYING` on a fast associate. Accepted because the icons exist to report
+`SCANNING → CONNECTING → CONNECTED` on a fast associate. Accepted because the icons exist to report
 the state the device is *in*, not to animate the path it took, and the terminal state is always
 painted. If the resync indicator is ever wanted as an acknowledgement of the button press, that is a
 minimum-visible-duration on one icon, not a reason to go back to painting from foreign tasks.

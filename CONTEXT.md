@@ -37,7 +37,7 @@ The edge-triggered brightness reduction applied the moment the battery view cros
 _Avoid_: Low-power mode, brightness limit
 
 **WiFi manager**:
-The state machine (`IDLE → SCANNING → CONNECTING → VERIFYING → CONNECTED`) that owns the device's single stored WiFi credential and all connection attempts.
+The state machine (`IDLE → SCANNING → CONNECTING → LINK_UP → CONNECTED`) that owns the device's single stored WiFi credential and all connection attempts. It owns the link and only the link — it makes no claim about whether the internet is reachable.
 _Avoid_: Network manager, connection handler
 
 **Provisioning**:
@@ -60,9 +60,9 @@ _Avoid_: Connection failure, disconnected
 The remembered identity — BSSID and channel — of the access point the device last actually reached, used to skip the all-channel scan on the next connect in favour of a single targeted one. It records where the device *got to*, not what it was told to look for, so it is written on reaching the connected state and discarded the moment a targeted scan fails to find it there. Being a fact about the last success rather than an event, re-asserting an unchanged one changes nothing.
 _Avoid_: Cached BSSID, last known AP, fast-scan config
 
-**Connected-but-no-internet**:
-The WiFi manager state where the device has a real association and IP lease but a DNS probe failed — treated as usable (the device is still a LAN-connected clock), painted as a distinct status-bar color, and cleared only by a successful NTP sync.
-_Avoid_: Offline, degraded connection
+**Internet proof**:
+A successful NTP sync — the only evidence the firmware accepts that the internet works, and the reason it is accepted is that it *is* the thing that needed the internet. Association, an IP lease and a resolvable hostname each look like proof and are not: a DNS server answering with a portal address satisfies all three while nothing is reachable. The device therefore never predicts reachability at connect time; it reports the outcome, and the failure to obtain it is what the user sees.
+_Avoid_: Online, connectivity check, internet status, verified connection
 
 **VPN rebind**:
 The lightweight MicroLink/Tailscale reconnect path used after a WiFi reconnect, which reopens sockets while preserving the existing VPN session and WireGuard keys, as opposed to the full `microlink_init()`/`microlink_start()` registration done only on first connect.
