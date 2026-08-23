@@ -9,8 +9,11 @@ WiFi Manager handles the complete WiFi lifecycle:
 1. Load stored credentials from NVS
 2. Scan for matching networks
 3. Connect and obtain IP
-4. Verify internet connectivity via DNS probe
-5. Report connection state via callback events
+4. Report connection state via callback events
+
+It owns the link and only the link. Whether the internet is reachable is not this component's
+question and it makes no claim about it — the firmware's only proof of internet is a successful NTP
+sync, reported by `sntp_sync`. See `docs/adr/0008-internet-proof-belongs-to-ntp.md`.
 
 The component uses a persistent FreeRTOS task to manage state transitions and integrates with the rest of the system via
 event callbacks.
@@ -22,7 +25,7 @@ event callbacks.
 The WiFi Manager operates with five states (no RECONNECTING state):
 
 ```
-IDLE ──start()──► SCANNING ──match──► CONNECTING ──got IP──► VERIFYING ──DNS OK──► CONNECTED
+IDLE ──start()──► SCANNING ──match──► CONNECTING ──got IP──► LINK_UP ──────────► CONNECTED
   ▲                  │                     │                      │                    │
   │                  │ no match            │ fail                 │ disconnect         │ disconnect
   └──────────────────┴─────────────────────┴──────────────────────┴────────────────────┘
@@ -32,8 +35,8 @@ IDLE ──start()──► SCANNING ──match──► CONNECTING ──got I
 
 - **IDLE** → **SCANNING**: `wifi_manager_start()` called with credentials loaded
 - **SCANNING** → **CONNECTING**: Stored SSID found in scan results
-- **CONNECTING** → **VERIFYING**: Got IP address (DHCP)
-- **VERIFYING** → **CONNECTED**: DNS probe to `pool.ntp.org` succeeds
+- **CONNECTING** → **LINK_UP**: Got IP address (DHCP)
+- **LINK_UP** → **CONNECTED**: immediate, unless a stop or a disconnect landed first
 - Any state → **IDLE**: Disconnect event or `wifi_manager_stop()` called
 - Any state → **IDLE** with event: Failure condition (no match, connection failed, etc.)
 
@@ -41,7 +44,9 @@ IDLE ──start()──► SCANNING ──match──► CONNECTING ──got I
 
 - No explicit RECONNECTING state — on disconnect, WiFi Manager returns to IDLE and fires an event
 - Caller (`main.c`) decides whether to retry or start BLE provisioning
-- VERIFYING includes a DNS probe to verify internet connectivity, not just local network access
+- LINK_UP does no waiting: it is the single join point of the two paths into CONNECTED (the scan
+  path, and the post-provisioning shortcut straight from IDLE), so the stop/disconnect re-check, the
+  CONNECTED event and the one AP-hint save happen in exactly one place
 - Persistent task created once in `wifi_manager_init()`, never destroyed
 
 ### Credential Storage
@@ -69,7 +74,7 @@ wifi_manager/
 ├── priv_include/
 │   └── wifi_priv.h               ← Internal constants, wifi_cred_load()
 ├── src/
-│   ├── wifi_manager.c            ← State machine, persistent task, DNS probe
+│   ├── wifi_manager.c            ← State machine, persistent task
 │   └── wifi_credentials.c        ← NVS credential read/write/delete
 └── CMakeLists.txt
 ```
@@ -177,9 +182,7 @@ WiFi Manager fires events via the callback when state changes:
 |-------------------------|---------------------------------------------------------|-----------------------------------------------------------------|
 | `WIFI_MGR_SCANNING`     | Scan started                                            | Update UI: show "Scanning..."                                   |
 | `WIFI_MGR_CONNECTING`   | Attempting to connect to matched SSID                   | Update UI: show "Connecting to [SSID]..."                       |
-| `WIFI_MGR_GOT_IP`       | Got IP address via DHCP                                 | (Internal: DNS probe in progress)                               |
-| `WIFI_MGR_CONNECTED`    | DNS probe successful, internet verified                 | Update UI: show WiFi icon, enable time display                  |
-| `WIFI_MGR_NO_INTERNET`  | Fired **right after** `CONNECTED` when the DNS probe failed | Update UI: paint the yellow "associated but no internet" state over the green just drawn — association and IP lease are real, only the DNS probe failed |
+| `WIFI_MGR_CONNECTED`    | Associated with an IP lease — says nothing about internet reachability | Update UI: show WiFi icon; start anything that needs the network |
 | `WIFI_MGR_DISCONNECTED` | Lost WiFi connection while connected                    | Update UI to disconnected, schedule auto-reconnect with backoff |
 | `WIFI_MGR_NO_CRED`      | No credentials stored in NVS at start                   | Call `ble_provisioning_start()` to enter setup mode             |
 | `WIFI_MGR_NO_MATCH`     | Stored SSID not found in scan results                   | Update UI to disconnected, schedule auto-reconnect with backoff |
@@ -248,18 +251,18 @@ schedules an auto-reconnect via `wifi_manager_start()` with exponential backoff.
 
 **Critical:** Stop WiFi before starting BLE provisioning to avoid driver conflicts.
 
-### DNS Probe (Internet Verification)
+### Internet reachability is not checked here
 
-After obtaining an IP address, WiFi Manager sends a DNS query to `pool.ntp.org` to verify internet
-connectivity. The state machine enters **CONNECTED either way** — the association and IP lease are
-real, and a LAN-only network is still usable — but the DNS probe result changes what fires next:
+The component reports a link, not connectivity. `WIFI_MGR_CONNECTED` means associated with an IP
+lease — on a LAN-only network or behind a captive portal it fires exactly the same, because the
+association and the lease are real and the device is still a usable clock.
 
-- **Full internet access** — only `WIFI_MGR_CONNECTED` fires.
-- **Local WiFi only** (no internet, e.g. a captive portal) — `WIFI_MGR_CONNECTED` fires first, then
-  `WIFI_MGR_NO_INTERNET` fires immediately after, so the caller can paint over the just-drawn
-  "online" state. This is deliberate ordering — reversing it would leave a stale green icon.
-
-This is important for NTP synchronization and ensures the device knows when it's truly online.
+There used to be a DNS probe here that ran before `CONNECTED` and reported "verified online". It
+only ever proved a name resolved (a DNS server answering with a portal address passed it while
+nothing was reachable, #74), its verdict fed nothing but an icon colour, and a failing probe delayed
+`CONNECTED` — and so NTP and Tailscale — by seconds on the networks that needed them soonest. The
+proof now comes from the component that actually needs the internet: a successful NTP sync. See
+`docs/adr/0008-internet-proof-belongs-to-ntp.md`.
 
 ## Configuration
 
@@ -269,7 +272,6 @@ WiFi Manager uses hardcoded timeouts (see `wifi_priv.h`):
 |--------------------|------------|------------------------|
 | Scan timeout       | 10 seconds | WiFi scan duration     |
 | Connection timeout | 15 seconds | Time to get IP address |
-| DNS probe timeout  | 5 seconds  | Internet verification  |
 
 To adjust, edit `wifi_priv.h` and rebuild.
 
@@ -296,7 +298,7 @@ To adjust, edit `wifi_priv.h` and rebuild.
 WiFi Manager is designed for real hardware (ESP32-S3) and WiFi networks. Test scenarios:
 
 1. **First boot, no credentials** → IDLE fires NO_CRED → BLE provisioning
-2. **Credentials set, network found** → SCANNING → CONNECTING → VERIFYING → CONNECTED
+2. **Credentials set, network found** → SCANNING → CONNECTING → LINK_UP → CONNECTED
 3. **Credentials set, network not found** → SCANNING → NO_MATCH → caller schedules reconnect (no BLE)
 4. **Connection fails** → CONNECTING fails → ALL_FAILED → caller schedules reconnect (no BLE)
 5. **WiFi drops while in use** → CONNECTED → DISCONNECTED → caller schedules reconnect (no BLE)

@@ -26,8 +26,8 @@ extern "C"
     WIFI_ST_IDLE,       // Initialized, not running. Waiting for start()
     WIFI_ST_SCANNING,   // Aggregated scan in progress
     WIFI_ST_CONNECTING, // Trying stored AP credential
-    WIFI_ST_VERIFYING,  // Got IP, checking internet connectivity
-    WIFI_ST_CONNECTED,  // Verified online, operational
+    WIFI_ST_LINK_UP,    // Associated with an IP lease; the single join point into CONNECTED
+    WIFI_ST_CONNECTED,  // Link established, operational
   } wifi_state_t;
 
   // ============================================================
@@ -38,12 +38,10 @@ extern "C"
   {
     WIFI_MGR_SCANNING,     // Started scanning for APs
     WIFI_MGR_CONNECTING,   // Trying to connect
-    WIFI_MGR_GOT_IP,       // Got IP but not yet verified online
-    WIFI_MGR_CONNECTED,    // Verified online (DNS probe OK)
-    WIFI_MGR_NO_INTERNET,  // Fired right after CONNECTED when the DNS probe failed. Informational:
-                           // the state machine still enters CONNECTED, because the association and
-                           // the IP lease are real and a LAN-only network is usable. Exists so the
-                           // UI can say so instead of showing a plain "online".
+    WIFI_MGR_CONNECTED,    // Associated with an IP lease. Says nothing about internet reachability:
+                           // this component owns the link and nothing else. The only evidence the
+                           // firmware accepts that the internet works is a successful NTP sync,
+                           // reported by sntp_sync. See docs/adr/0008-internet-proof-belongs-to-ntp.md.
     WIFI_MGR_DISCONNECTED, // Lost connection — caller should schedule a backoff reconnect (no BLE)
     WIFI_MGR_SCAN_DONE,    // WiFi scan complete
     WIFI_MGR_NO_CRED,      // No credential in NVS — caller should start BLE provisioning
@@ -75,10 +73,14 @@ extern "C"
   //     mid-connect deliberately suppresses NO_MATCH / ALL_FAILED / DISCONNECTED so the app
   //     cannot schedule a reconnect against its own deliberate stop. Consequence: **nothing
   //     brings WiFi back but the caller.** Whoever stops it owns restarting it.
-  //  2. ESP_ERR_TIMEOUT is a normal outcome, not an error. The wait is bounded, but the DNS
-  //     probe in VERIFYING is not — getaddrinfo() takes no timeout argument, and stopping
-  //     disconnects the link out from under an in-flight lookup. On timeout the stop is still
-  //     latched and the task will park shortly; only the radio's idleness is uncertain, which
+  //  2. ESP_ERR_TIMEOUT is a normal outcome, not an error — though it should now be rare. It used
+  //     to be expected: the DNS probe in VERIFYING ran an unbounded getaddrinfo() that no stop
+  //     could interrupt. With that gone every remaining path is bounded, and the longest is one
+  //     scan round (~4s against STOP_TIMEOUT_MS of 6s) — esp_wifi_scan_start() blocks, so a stop
+  //     is honoured between rounds and not during one. That margin is thin and rests on the
+  //     driver's own dwell estimate, so callers must still handle the timeout rather than assume
+  //     it cannot happen. On timeout the stop is still latched and the task will park shortly;
+  //     only the radio's idleness is uncertain, which
   //     matters solely to callers about to hand the radio to something else (BLE provisioning).
   //     Proceed anyway — refusing to would leave the user with no way out.
   //  3. Called from the wifi task itself (i.e. from inside a wifi_event_cb_t), it returns ESP_OK

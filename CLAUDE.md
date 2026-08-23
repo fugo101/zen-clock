@@ -99,13 +99,15 @@ All event callbacks and nav wiring live here:
 | `on_battery_reading`                    | Registered via `status_bar_register_battery_cb()`; a `switch` over `battery_clamp_step()`, which owns the not-low→low edge rule. Clamps brightness to `BATT_LOW_BRIGHTNESS` on the edge (not level-triggered), restores it on recovery. Never fires on USB power, never writes NVS |
 | `app_handlers_register_nav_callbacks()` | Wires `do_reset_wifi`, `do_sleep_now`, `do_ntp_resync` and `do_provisioning` into nav system — called once at boot            |
 
-**The WiFi icon is derived, not published twice.** Two tasks own two fields — the wifi task moves
-the link status, the SNTP task clears the no-internet flag when a sync proves the internet works —
-and each writes only its own field before calling `publish_wifi_icon()`, which derives the icon from
-both under a spinlock. Publishing the icon directly from both tasks was a real race: WiFi drops, the
-wifi task publishes `DISCONNECTED`, and an in-flight NTP response that read the flag a moment
-earlier publishes `CONNECTED` over the top — solid green on a dead link until the backoff reconnect
-fires, up to five minutes later.
+**The WiFi icon reports the link and nothing else.** `set_link_status()` stores `s_link_status` and
+publishes the icon inside one critical section, so the field `net_worker` reads through
+`link_is_up()` can never disagree with what is on screen. It used to derive the icon from *two*
+independently-owned fields — the wifi task's link status and an `s_unverified` flag the SNTP task
+cleared — and that derivation is what made the section load-bearing: publishing directly from both
+tasks was a real race (WiFi drops, the wifi task publishes `DISCONNECTED`, an in-flight NTP response
+publishes `CONNECTED` over the top — solid green on a dead link for up to five minutes). The flag
+went with the DNS probe (#74); the internet is now reported only by the NTP icon, whose own task can
+prove it. See `docs/adr/0008-internet-proof-belongs-to-ntp.md`.
 
 `on_wifi_event` starts BLE provisioning **only** on `NO_CRED`. `NO_MATCH`, `ALL_FAILED` and
 `DISCONNECTED` schedule a reconnect instead (30s doubling to 5min) — losing coverage must never drop the device into
@@ -136,7 +138,7 @@ mid-action now always lands instead of being silently dropped.
 | `components/input_policy/`     | Pure decision behind `on_button_press()`: emergency IO14 hold, the two-button deep-sleep combo, the button→`nav_action_t` mapping, and the QR-overlay swallow/dismiss rule. Two pure stages: `input_policy_decide()` resolves the escape hatches, `input_policy_apply_overlay()` guards a NAV outcome. No ESP-IDF headers — symlinked into `test/test_pure_logic/` alongside its `nav.h` |
 | `components/bsp/`              | Board Support: display init, battery (GPIO4/ADC1_CH3), backlight (LEDC), buttons                                                                                                                                           |
 | `components/ui/`               | LVGL UI — modular widgets, see below                                                                                                                                                                                       |
-| `components/wifi_manager/`     | WiFi state machine: IDLE → SCANNING → CONNECTING → VERIFYING → CONNECTED                                                                                                                                                   |
+| `components/wifi_manager/`     | WiFi state machine: IDLE → SCANNING → CONNECTING → LINK_UP → CONNECTED. Owns the link only — it makes no claim about internet reachability (ADR-0008)                                                                       |
 | `components/ble_provisioning/` | BLE WiFi provisioning via `espressif/network_provisioning`. `prov_session.c` is the session lifecycle (phase + latched outcome) as a pure transition function — no ESP-IDF headers, so it builds for the host-side `[env:native]` tests; symlinked into `test/test_pure_logic/`. It owns the `BLE_PROV_SUCCESS`-vs-`STOPPED` distinction that gates the one-way 110 KB memory release |
 | `components/settings/`         | NVS-backed settings behind a 7-symbol API (`settings_get/get_bool/set` + `settings_key_t`). `settings_table.c` is the descriptor table — NVS key, default, range and boolean polarity for all 8 settings — and is pure, so it builds for the host-side `[env:native]` tests; symlinked into `test/test_pure_logic/`. See ADR-0006 |
 | `components/sntp_sync/`        | NTP time synchronization; skips initial sync on deep-sleep wake if recently synced                                                                                                                                         |
@@ -271,7 +273,7 @@ before it knows what deferred work came out of it.
 
 The bounded 50 ms lock (`wifi_event_lvgl_lock()`) is **gone**. It was only ever legitimate where a
 later event repeats the paint, and the WiFi status icon was not such a place — a timeout entering a
-terminal state (`CONNECTED`, `NO_INTERNET`) left the icon stale for the life of the connection,
+terminal state (`CONNECTED`, `DISCONNECTED`) left the icon stale for the life of the connection,
 because there is no next event.
 
 **Never hardcode colors** (e.g., `lv_color_white()`). The UI supports Light and Dark themes — use theme-aware color
@@ -399,16 +401,17 @@ After any dependency-manager or ESP-IDF upgrade touching this path, diff
 - NTP (`LV_SYMBOL_REFRESH`): orange while syncing, **red when the sync failed**, hidden when idle or synced — the
   chain collapses automatically. A failed sync must stay visible: the clock is showing the wrong time and nothing
   else on screen says so.
-- WiFi (`LV_SYMBOL_WIFI`): dim disconnected · 70% scanning · orange connecting · light blue verifying · green online ·
-  **yellow associated-but-no-internet** · cyan provisioning
+- WiFi (`LV_SYMBOL_WIFI`): dim disconnected · 70% scanning · orange connecting · green link up · cyan provisioning.
+  Green means associated with an IP lease, not "internet works" — that claim belongs to the NTP icon above.
 - Tailscale (`LV_SYMBOL_SHUFFLE`): always visible, color reflects connection state
 
-**Connected but no internet:** `wifi_manager` still enters `WIFI_ST_CONNECTED` when the DNS probe fails — the
-association and IP lease are real, and a LAN-only network is usable — but it fires `WIFI_MGR_NO_INTERNET` immediately
-*after* `WIFI_MGR_CONNECTED` so the handler paints yellow over the green. The state clears when NTP next succeeds,
-which is proof the internet works. There is deliberately **no periodic DNS re-probe** in `WIFI_ST_CONNECTED`:
-`do_dns_probe()` contains an unbounded `getaddrinfo()`, and `wifi_manager_stop()` has to be able to interrupt that
-state within `STOP_TIMEOUT_MS`.
+**Connected but no internet:** there is no such state, and adding one back needs ADR-0008 read first. `wifi_manager`
+enters `WIFI_ST_CONNECTED` on any real association with an IP lease and says nothing further; a LAN-only network or a
+captive portal is still a usable clock. The firmware's only proof that the internet works is a successful NTP sync,
+and its absence is already on screen as the red NTP icon. The DNS probe that used to predict this before `CONNECTED`
+is gone (#74): it only proved a name resolved — a DNS server answering with a portal address passed it while NTP timed
+out completely — and a failing probe delayed `CONNECTED`, and so NTP and Tailscale, by seconds on exactly those
+networks.
 
 ## Non-Architectural Notes
 
@@ -422,7 +425,7 @@ of failure events can't inflate the delay while leaving no retry pending. `RECON
 (the 5 s re-arm after `wifi_manager_start()` refuses) deliberately bypasses the policy entirely:
 that is not a failed attempt.
 
-**WiFi manager:** `BIT_STOP` is checked before `BIT_DISCONNECTED` in both VERIFYING and CONNECTED —
+**WiFi manager:** `BIT_STOP` is checked before `BIT_DISCONNECTED` in both LINK_UP and CONNECTED —
 `wifi_manager_stop()` raises both bits, and testing DISCONNECTED first would report a spurious
 failure and schedule a reconnect against the app's own deliberate stop. `s_task_parked` distinguishes
 "genuinely blocked on the task notify" from IDLE-in-passing (the state the task also transits through
@@ -431,24 +434,23 @@ events are suppressed while `stop_requested()`, otherwise a deliberate stop can 
 fires later during BLE provisioning and takes the radio back. A 32-char SSID with no NUL terminator
 is correct — `wifi_cfg.sta.ssid` is `uint8_t[32]`, the 802.11 maximum, and the driver reads it bounded.
 
-**AP hint:** `wifi_cred_save_ap_hint()` has exactly **one** call site, on the `VERIFYING →
-CONNECTED` transition, and it must stay that way. It used to sit on the `CONNECTING` success path,
-which the post-provisioning shortcut in IDLE skips entirely — so the hint went unwritten until the
-*second* successful connect and the first cold boot after provisioning paid the full aggregated
-scan for an AP the device already knew. That shortcut now stashes `esp_wifi_sta_get_ap_info()` into
-`s_match_ap` so both routes into VERIFYING reach the one save. The call sits **above** the
-`internet_ok` check (a LAN-only AP is still the AP to fast-scan back to) and **below**
-`fire_event(WIFI_MGR_CONNECTED)` (a genuine write is a flash commit, and everything between the
-last `BIT_STOP` check and it is time `wifi_manager_stop()` cannot interrupt). The function is
-idempotent by design, so the reconnects that also land there cost nothing — don't "optimise" that
-guard away by hoisting a condition to the call site, which is how the write went missing before.
+**AP hint:** `wifi_cred_save_ap_hint()` has exactly **one** call site, on the `LINK_UP → CONNECTED`
+transition, and it must stay that way — that is the whole reason `WIFI_ST_LINK_UP` still exists now
+that it does no waiting. It used to sit on the `CONNECTING` success path, which the
+post-provisioning shortcut in IDLE skips entirely — so the hint went unwritten until the *second*
+successful connect and the first cold boot after provisioning paid the full aggregated scan for an
+AP the device already knew. That shortcut stashes `esp_wifi_sta_get_ap_info()` into `s_match_ap` so
+both routes into LINK_UP reach the one save. The call sits **below** `fire_event(WIFI_MGR_CONNECTED)`:
+a genuine write is a flash commit, and everything between the last `BIT_STOP` check and it is time
+`wifi_manager_stop()` cannot interrupt. The function is idempotent by design, so the reconnects that
+also land there cost nothing — don't "optimise" that guard away by hoisting a condition to the call
+site, which is how the write went missing before.
 
 **Log levels in `wifi_manager`:** `CONFIG_LOG_MAXIMUM_LEVEL=3` compiles out `ESP_LOGD` entirely, so
 a diagnostic at DEBUG is a diagnostic that does not exist on hardware. The component deliberately
 has none left. Two lines are at INFO specifically because they are the only evidence for things
-nothing else reports — `"AP hint saved"` (proof the write happened) and `"DNS probe N/M failed"`
-(the up-to-8 s that elapses *before* `WIFI_MGR_CONNECTED` fires). Don't demote either to DEBUG for
-being noisy.
+nothing else reports — chief among them `"AP hint saved"`, the only proof the write happened. Don't
+demote it to DEBUG for being noisy.
 
 **BLE provisioning:** the session lifecycle is one enumerated phase plus a latched outcome, in the
 pure `prov_session.c` (host-tested; symlinked into `test/test_pure_logic/`). It replaced four

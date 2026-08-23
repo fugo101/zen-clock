@@ -2,10 +2,10 @@
 // ZenClock Wi-Fi Manager — State-machine driven, persistent-task architecture
 //
 // Features:
-//   - 5-state machine: IDLE → SCANNING → CONNECTING → VERIFYING → CONNECTED
+//   - 5-state machine: IDLE → SCANNING → CONNECTING → LINK_UP → CONNECTED
 //   - Single credential from NVS (namespace "wifi_cred")
 //   - No auto-retry on disconnect — fires DISCONNECTED event for BLE re-provisioning
-//   - DNS probe after Got IP to verify internet connectivity
+//   - Owns the link only: it makes no claim about internet reachability (ADR-0008)
 
 #include "wifi_manager.h"
 #include "wifi_priv.h"
@@ -20,7 +20,6 @@
 #include <freertos/task.h>
 #include <freertos/event_groups.h>
 #include <freertos/semphr.h>
-#include <lwip/netdb.h>
 
 static const char *tag = "WiFiMgr";
 
@@ -63,7 +62,7 @@ static volatile bool s_task_parked = false;
 
 static const char *state_name(const wifi_state_t st)
 {
-  static const char *names[] = {"IDLE", "SCANNING", "CONNECTING", "VERIFYING", "CONNECTED"};
+  static const char *names[] = {"IDLE", "SCANNING", "CONNECTING", "LINK_UP", "CONNECTED"};
   return (st <= WIFI_ST_CONNECTED) ? names[st] : "?";
 }
 
@@ -397,60 +396,6 @@ static bool try_connect_candidate(const wifi_ap_record_t *ap, const char *passwo
 }
 
 // ============================================================
-// DNS probe — verify internet connectivity after getting IP
-// ============================================================
-// NOLINTNEXTLINE(readability-function-cognitive-complexity)
-static bool do_dns_probe(void)
-{
-  ESP_LOGI(tag, "Verifying internet connectivity...");
-  fire_event(WIFI_MGR_GOT_IP);
-
-  for (int probe = 0; probe < DNS_PROBE_MAX; probe++)
-  {
-    const EventBits_t bits = xEventGroupGetBits(s_event_group);
-    if (bits & (BIT_DISCONNECTED | BIT_STOP))
-    {
-      ESP_LOGW(tag, "Connection lost during DNS probe");
-      return false;
-    }
-
-    struct addrinfo hints = {.ai_family = AF_INET};
-    struct addrinfo *res = NULL;
-    const int err = getaddrinfo(DNS_PROBE_HOST, "123", &hints, &res);
-    if (err == 0 && res != NULL)
-    {
-      freeaddrinfo(res);
-      ESP_LOGI(tag, "DNS probe OK (attempt %d/%d)", probe + 1, DNS_PROBE_MAX);
-      return true;
-    }
-    // INFO because ESP_LOGD is compiled out (see CLAUDE.md, Non-Architectural Notes): a failing
-    // probe spends up to (DNS_PROBE_MAX - 1) × DNS_PROBE_INTERVAL_MS here *before*
-    // WIFI_MGR_CONNECTED fires, and nothing else in the log accounts for it (#45).
-    ESP_LOGI(tag, "DNS probe %d/%d failed", probe + 1, DNS_PROBE_MAX);
-
-    // Wait instead of vTaskDelay so a stop or a disconnect cuts the pause short. A plain delay
-    // here meant wifi_manager_stop() had to sit through up to DNS_PROBE_INTERVAL_MS per attempt
-    // on top of getaddrinfo(). Skipped after the last attempt — it bought nothing but latency.
-    if (probe + 1 < DNS_PROBE_MAX)
-    {
-      const EventBits_t waited = xEventGroupWaitBits(s_event_group, BIT_STOP | BIT_DISCONNECTED, pdFALSE, pdFALSE,
-                                                     pdMS_TO_TICKS(DNS_PROBE_INTERVAL_MS));
-      if (waited & (BIT_STOP | BIT_DISCONNECTED))
-      {
-        ESP_LOGW(tag, "Connection lost during DNS probe");
-        return false;
-      }
-    }
-  }
-
-  // No internet confirmed. The caller still treats the link as usable — a LAN-only or
-  // captive-portal network is a working network for everything except NTP — but this is a
-  // genuine negative result, not a success.
-  ESP_LOGW(tag, "DNS probe failed after %d attempts — no confirmed internet", DNS_PROBE_MAX);
-  return false;
-}
-
-// ============================================================
 // Persistent Wi-Fi task — state machine loop, never exits
 // ============================================================
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
@@ -524,7 +469,7 @@ static void wifi_task(void *arg) // NOLINT(readability-non-const-parameter)
       ESP_LOGI(tag, "Loaded credential: SSID=\"%s\"", s_ssid);
 
       // After BLE provisioning, Wi-Fi is already connected (network_prov_mgr verified it).
-      // Skip scan+connect and go straight to VERIFYING.
+      // Skip scan+connect and go straight to LINK_UP.
       wifi_ap_record_t ap_info;
       if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK && strcmp((const char *) ap_info.ssid, s_ssid) == 0)
       {
@@ -537,7 +482,7 @@ static void wifi_task(void *arg) // NOLINT(readability-non-const-parameter)
         // provisioning pays the full aggregated scan for an AP the device already knew (#100).
         s_match_ap = ap_info;
         xEventGroupClearBits(s_event_group, BIT_GOT_IP | BIT_DISCONNECTED);
-        set_state(WIFI_ST_VERIFYING);
+        set_state(WIFI_ST_LINK_UP);
         break;
       }
 
@@ -635,7 +580,7 @@ static void wifi_task(void *arg) // NOLINT(readability-non-const-parameter)
       if (try_connect_candidate(&s_match_ap, s_pass))
       {
         ESP_LOGI(tag, "Connected to \"%s\"!", s_ssid);
-        set_state(WIFI_ST_VERIFYING);
+        set_state(WIFI_ST_LINK_UP);
       }
       else if (stop_requested())
       {
@@ -652,12 +597,17 @@ static void wifi_task(void *arg) // NOLINT(readability-non-const-parameter)
     }
 
     // ────────────────────────────────────────────
-    // VERIFYING — DNS probe to confirm internet
+    // LINK_UP — the single join point into CONNECTED
     // ────────────────────────────────────────────
-    case WIFI_ST_VERIFYING:
+    // Does no waiting and proves nothing about the internet; it exists because two paths reach
+    // CONNECTED (the scan path via CONNECTING, and the post-provisioning shortcut straight from
+    // IDLE) and everything owed on entry — the stop/disconnect re-check, the CONNECTED event and
+    // the one AP-hint save — must happen in exactly one place. It used to run a DNS probe here
+    // and call the result "verified online"; that probe only ever proved DNS resolved (#74), and
+    // it delayed CONNECTED — and so NTP and Tailscale — by seconds on precisely the broken
+    // networks that needed them soonest. See docs/adr/0008-internet-proof-belongs-to-ntp.md.
+    case WIFI_ST_LINK_UP:
     {
-      const bool internet_ok = do_dns_probe();
-
       EventBits_t bits = xEventGroupGetBits(s_event_group);
 
       // BIT_STOP first: wifi_manager_stop() calls esp_wifi_disconnect(), so a deliberate stop
@@ -671,36 +621,25 @@ static void wifi_task(void *arg) // NOLINT(readability-non-const-parameter)
       if (bits & BIT_DISCONNECTED)
       {
         xEventGroupClearBits(s_event_group, BIT_DISCONNECTED);
-        ESP_LOGW(tag, "Disconnected during verification");
+        ESP_LOGW(tag, "Disconnected before reaching CONNECTED");
         fire_event(WIFI_MGR_DISCONNECTED);
         set_state(WIFI_ST_IDLE);
         break;
       }
 
-      // Deliberately still CONNECTED when the probe failed: the association and the IP lease are
-      // real, and demoting here would stop SNTP and MicroLink from ever starting on a LAN-only
-      // network.
       set_state(WIFI_ST_CONNECTED);
       fire_event(WIFI_MGR_CONNECTED);
 
-      // The single hint save site, covering both routes into VERIFYING: the scan path (s_match_ap
+      // The single hint save site, covering both routes into LINK_UP: the scan path (s_match_ap
       // from the scan) and the post-provisioning shortcut (s_match_ap from esp_wifi_sta_get_ap_info).
       // Here rather than on the CONNECTING success path so the hint only ever records an AP that
-      // actually reached CONNECTED, and *above* the internet check below — a LAN-only AP is still
-      // exactly the AP to fast-scan back to next boot.
+      // actually reached CONNECTED — a LAN-only AP is still exactly the AP to fast-scan back to
+      // next boot.
       //
       // After fire_event(), not before: a genuine write is a flash commit, and everything between
       // the last BIT_STOP check and here is time wifi_manager_stop() cannot interrupt. Ordering it
       // second leaves both that window and the CONNECTED notification latency exactly as they were.
       wifi_cred_save_ap_hint(s_match_ap.bssid, s_match_ap.primary);
-
-      if (!internet_ok)
-      {
-        ESP_LOGW(tag, "Entering CONNECTED without confirmed internet access");
-        // After CONNECTED, not before: the handler for that event paints the icon green, so this
-        // one has to arrive second to paint over it.
-        fire_event(WIFI_MGR_NO_INTERNET);
-      }
       break;
     }
 

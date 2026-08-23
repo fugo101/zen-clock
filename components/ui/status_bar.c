@@ -179,10 +179,12 @@ static void battery_timer_cb(lv_timer_t *timer) // NOLINT(readability-non-const-
 //
 // Reconciling is a comparison against what is on screen, deliberately, not a dirty flag. The two
 // cores give `volatile` no ordering guarantee, so a flag could become visible before the value it
-// refers to; the reconcile would then clear the flag, paint the stale value, and — CONNECTED and
-// NO_INTERNET being terminal states with no follow-up event — never repaint. Comparing instead
-// makes a torn read cost one reconcile tick and nothing else: the next tick still sees a
-// difference and corrects it.
+// refers to; the reconcile would then clear the flag, paint the stale value, and — CONNECTED being
+// a terminal state with no follow-up event — never repaint. Comparing instead makes a torn read
+// cost one reconcile tick and nothing else: the next tick still sees a difference and corrects it.
+//
+// This icon reports the link and nothing else. "The internet works" is proven only by a
+// successful NTP sync and is reported by the SNTP icon — see docs/adr/0008-internet-proof-belongs-to-ntp.md.
 // ============================================================
 
 static void paint_wifi_status(wifi_status_t status)
@@ -207,25 +209,10 @@ static void paint_wifi_status(wifi_status_t status)
     lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_ORANGE), 0);
     break;
 
-  case WIFI_STATUS_VERIFYING:
-    lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
-    lv_obj_set_style_text_opa(s_wifi_icon, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_LIGHT_BLUE), 0);
-    break;
-
   case WIFI_STATUS_CONNECTED:
     lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
     lv_obj_set_style_text_opa(s_wifi_icon, LV_OPA_COVER, 0);
     lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_GREEN), 0);
-    break;
-
-  case WIFI_STATUS_NO_INTERNET:
-    // Yellow, not green: the association and the IP lease are real, so this is not a
-    // disconnection, but the DNS probe failed and anything needing the internet — NTP above all
-    // — will not work. Without this the device showed a plain green icon while displaying 1970.
-    lv_label_set_text(s_wifi_icon, LV_SYMBOL_WIFI);
-    lv_obj_set_style_text_opa(s_wifi_icon, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(s_wifi_icon, lv_palette_main(LV_PALETTE_YELLOW), 0);
     break;
 
   case WIFI_STATUS_PROVISIONING:

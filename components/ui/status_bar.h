@@ -33,9 +33,8 @@ extern "C"
     WIFI_STATUS_DISCONNECTED,
     WIFI_STATUS_SCANNING, // Scan in progress (between retries)
     WIFI_STATUS_CONNECTING,
-    WIFI_STATUS_VERIFYING,    // Got IP, checking internet
-    WIFI_STATUS_CONNECTED,    // Verified online
-    WIFI_STATUS_NO_INTERNET,  // Associated with an IP, but the internet check failed
+    WIFI_STATUS_CONNECTED,    // Associated with an IP lease. Whether the internet is reachable is
+                              // a separate fact with its own icon — see sntp_status_t (ADR-0008).
     WIFI_STATUS_PROVISIONING, // BLE provisioning active — waiting for credentials
   } wifi_status_t;
 

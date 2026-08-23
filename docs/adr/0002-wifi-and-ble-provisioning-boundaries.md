@@ -16,25 +16,24 @@ against itself — and it is why `dismiss_provisioning()` and the `BLE_PROV_STOP
 WiFi by hand. The full contract (five numbered invariants) is stated once, on the declaration in
 `components/wifi_manager/include/wifi_manager.h`; that header is the source of truth, not this file.
 
-**There is deliberately no periodic DNS re-probe once `WIFI_ST_CONNECTED`.** `do_dns_probe()`
-contains an unbounded `getaddrinfo()`, and `wifi_manager_stop()` must be able to interrupt the
-CONNECTED state within its stop timeout — a background re-probe loop would risk blocking that.
-This constraint is real and is now actually enforced. For a long time it was not: the re-probe was
-rejected on these grounds while `on_wifi_event()`'s own CONNECTED branch blocked the same task on
-the same path for far longer — `sntp_sync_start()`'s 500 ms delay, then Tailscale registration,
-DERP and a WireGuard handshake, all unbounded. A concurrent `wifi_manager_stop()` burned its full
-`STOP_TIMEOUT_MS` and returned `ESP_ERR_TIMEOUT`, after which the caller handed the radio to BLE
-anyway. That work now runs on `net_worker` (`src/app_handlers.c`); the handler publishes the link
-state and returns. Either the constraint holds for everyone on that task or it holds for no one. A
-successful NTP sync clears the no-internet state instead, since reaching a time server is itself
-proof the internet works. The accepted cost: `do_dns_probe()` only proves DNS resolves, not that
-anything is reachable (a DNS server returning a null/portal IP for the probe host passes it while
-NTP times out completely) — known and not fixed.
+**~~There is deliberately no periodic DNS re-probe once `WIFI_ST_CONNECTED`.~~ Superseded by
+ADR-0008.** The constraint was real — `do_dns_probe()` contained an unbounded `getaddrinfo()`, and
+`wifi_manager_stop()` must be able to interrupt the CONNECTED state within its stop timeout — and
+enforcing it on `on_wifi_event()`'s own CONNECTED branch, which had been blocking the same task far
+longer on `sntp_sync_start()`, Tailscale registration, DERP and a WireGuard handshake, was the right
+fix; that work now runs on `net_worker` (`src/app_handlers.c`) and the handler publishes the link
+state and returns. What did not survive is the premise underneath it: this paragraph recorded as an
+accepted cost that "`do_dns_probe()` only proves DNS resolves, not that anything is reachable", and
+then kept the probe anyway for a verdict whose sole consumer was an icon colour. The probe is gone
+(#74); a successful NTP sync is now the only claim of internet the firmware makes. See
+`docs/adr/0008-internet-proof-belongs-to-ntp.md`.
 
-**`WIFI_MGR_NO_INTERNET` fires *after* `WIFI_MGR_CONNECTED`, not instead of it.** The association and
-IP lease are real and a LAN-only network is genuinely usable, so the state machine still enters
-CONNECTED; the no-internet event just paints a different status-bar color over it. Reversing the
-order would silently disable the "still usable, just no internet" signal entirely.
+**~~`WIFI_MGR_NO_INTERNET` fires *after* `WIFI_MGR_CONNECTED`, not instead of it.~~ Superseded by
+ADR-0008.** The ordering reasoning was sound and is preserved in spirit: the state machine still
+enters CONNECTED on a network with no working uplink, because the association and the IP lease are
+real and a LAN-only network is genuinely usable. Only the second event is gone, along with the
+status-bar state it painted — the WiFi icon now reports the link alone and the NTP icon reports
+whether the internet was reached.
 
 **~~`on_wifi_event()` uses a bounded 50ms LVGL lock, not the default unbounded one.~~ Superseded by
 ADR-0007.** The reasoning behind the bounded lock was right — `fire_event()` runs synchronously on

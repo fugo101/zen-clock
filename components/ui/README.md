@@ -163,7 +163,7 @@ void clock_face_destroy(void);            // stop timer before deleting parent
 ```c
 void status_bar_create(lv_obj_t *parent);
 void status_bar_destroy(void);
-void status_bar_set_wifi_status(wifi_status_t status); // incl. NO_INTERNET and PROVISIONING
+void status_bar_set_wifi_status(wifi_status_t status); // link state only — incl. PROVISIONING
 void status_bar_set_sntp_status(sntp_status_t status); // SYNCING orange, FAILED red, otherwise hidden
 void status_bar_set_ts_status(ts_status_t status);     // Tailscale: idle/connecting/connected/error
 void status_bar_register_battery_cb(status_bar_battery_cb_t cb); // cb(battery_view_t) — one, last writer wins
@@ -176,12 +176,12 @@ Icon chain (right-to-left): `[TS ⇄] [NTP ↻ — syncing or failed] [WiFi] [Ba
 | `DISCONNECTED` | dim, no colour |
 | `SCANNING` | 70% opacity, no colour |
 | `CONNECTING` | orange |
-| `VERIFYING` | light blue |
 | `CONNECTED` | green |
-| `NO_INTERNET` | **yellow** — associated with an IP, but the DNS probe failed |
 | `PROVISIONING` | cyan |
 
-`NO_INTERNET` clears when NTP next succeeds — reaching a time server proves the internet is back.
+This icon reports the **link**. Whether the internet is reachable is a separate fact with its own
+icon: the NTP icon goes red when a sync fails, which is the firmware's only real evidence either way
+(`docs/adr/0008-internet-proof-belongs-to-ntp.md`).
 
 `status_bar_set_wifi_status()`, `..._sntp_status()` and `..._ts_status()` **publish**: they write a
 value, take no lock, and paint nothing. `status_bar_reconcile(force)` — driven by `ui.c`'s 250 ms
